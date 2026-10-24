@@ -1,0 +1,24 @@
+# 原始数据与分析输出：所有层级均不上传。
+data/
+out/
+/Ra/ra_results.xlsx
+/Ra/surface_plots/
+
+# Python 缓存与临时文件。
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地凭据与环境配置。
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Windows 和 Office 临时文件。
+Thumbs.db
+Desktop.ini
+~$*
