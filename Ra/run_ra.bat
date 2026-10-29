@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================
 rem  Zygo 面粗糙度 Ra 提取 - 一键启动
-rem  双击本文件运行, 会提示每个区域几张图 (直接回车 = 默认 5)
+rem  双击本文件运行, 会提示每个区域取几张图 (直接回车 = 读取该区域全部图片)
 rem  也可命令行传参:  run_ra.bat 3          (每区域 3 张)
 rem                    run_ra.bat --batch 3 --no-plot
 rem ============================================================
@@ -81,12 +81,12 @@ goto :args_ready
 
 :ask_batch
 set "BATCH="
-set /p "BATCH=  每个区域几张图? 直接回车 = 5: "
-if not defined BATCH set "BATCH=5"
+set /p "BATCH=  每个区域取几张图 (填 5 = 只读 XX-1 ~ XX-5)? 直接回车 = 全部: "
+if not defined BATCH goto :args_ready
 echo !BATCH!|findstr /r /c:"^ *[1-9][0-9]* *$" >nul
 if errorlevel 1 (
-    echo  [提示] "!BATCH!" 不是正整数, 按每区域 5 张
-    set "BATCH=5"
+    echo  [提示] "!BATCH!" 不是正整数, 按整区全读处理
+    goto :args_ready
 )
 set "BATCH_ARGS=--batch !BATCH!"
 :args_ready
@@ -106,15 +106,9 @@ if not "%ERRCODE%"=="0" (
 
 echo  [完成] 结果已输出到本目录:
 echo           ra_results.xlsx      主表格
-echo           surface_plots 文件夹   三维表面图 (每张图一个 PNG)
+echo           out 文件夹   三维表面图 (每张图一个 PNG)
 echo.
 
-rem ---- 打开 Excel (start 不阻塞; explorer 要等 DDE 握手, 慢 3 s) ----
-if exist "%~dp0ra_results.xlsx" (
-    echo  正在打开 Excel 结果...
-    start "" "%~dp0ra_results.xlsx"
-)
-
-echo  按任意键关闭本窗口...
-pause >nul
+echo  本次运行结束, 窗口自动关闭 (出错时才会停住)
 endlocal
+exit /b 0

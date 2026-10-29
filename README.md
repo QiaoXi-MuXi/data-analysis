@@ -1,14 +1,15 @@
 # Data Analysis
 
-Windows 下的实验数据处理工具，包含 Zygo 面粗糙度 Ra 提取与 Raman 光谱绘图。
+Windows 下的实验数据处理工具，包含 Zygo 面粗糙度 Ra 提取、Raman 光谱绘图与 CLSM 槽宽/槽深测量。
 
 ## 目录与运行
 
 - `Ra/`：将 Zygo 截图放入 `Ra/data/`，双击 `Ra/run_ra.bat`。详见 [Ra 说明](Ra/README.md)。
 - `Raman/`：将两列光谱 TXT 放入 `Raman/data/`，使用 `stack.xlsx` 配置堆叠图，双击 `Raman/run.bat`。详见 [Raman 说明](Raman/README.md)。
-- `python/`：两个工具共用的便携 Python 3.12 和依赖，随仓库保留；无需修改本机 Python 或 Conda 环境。详见 [运行时说明](python/README.md)。
+- `CLSM/`：将共聚焦高度矩阵 TXT 放入 `CLSM/data/3d/`，双击 `CLSM/run_clsm.bat`。每次运行在写入结果前清空整个 `CLSM/out/`，仅保留本次输出；长期保留的结果请另存到 `out/` 外，自检不清理。采用多位置条带平均剖面测量剩余槽深和开口宽度，测量结果写入 `CLSM/out/paper_v4/`，二维高度图、三维表面图分别写入 `CLSM/out/2D/` 和 `CLSM/out/3D/`。Excel 第一页为核心结论，第二页为完整汇总，后续各页保留测量明细和敏感性对照。详见 [CLSM 说明](CLSM/README.md)。
+- `python/`：三个工具共用的便携 Python 3.12 和依赖，随仓库保留；无需修改本机 Python 或 Conda 环境。详见 [运行时说明](python/README.md)。
 
-首次克隆后，按需自行创建 `Ra/data/` 和 `Raman/data/` 并放入本地实验数据。Git 不保存空目录。
+首次克隆后，按需自行创建 `Ra/data/`、`Raman/data/` 和 `CLSM/data/3d/` 并放入本地实验数据。Git 不保存空目录。CLSM 的主脚本 `extract_groove.py`、`profile_measurement.py` 与 `surface_plots.py` 需放在同一目录；只有 CMP 后形貌时，输出为剩余槽深，不能计算绝对去除量。
 
 ## 新增模块约定
 

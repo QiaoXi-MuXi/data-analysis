@@ -3,7 +3,9 @@
 Zygo 轮廓仪界面截图 -> 面粗糙度 Ra 批量提取
 
 从 Zygo NewView 的 "Measure Controls" 面板读取面粗糙度 (Ra, nm),
-按区域分组 (每个区域默认 5 张图) 求平均, 输出 Excel 表格;
+按区域分组 (区域 = 文件名中最后一个 "-" 之前的前缀, 如 3-4.bmp 属区域 3,
+Si-2.bmp 属区域 Si; 名字不是 前缀-序号 格式时每 5 张一组) 求平均,
+输出 Excel 表格;
 同时把每张图的 Oblique Plot (三维表面图) 裁出来存成 PNG, 便于贴到报告里。
 
 设计要点:
@@ -14,11 +16,14 @@ Zygo 轮廓仪界面截图 -> 面粗糙度 Ra 批量提取
 
 输出:
     ra_results.xlsx          主表格
-    surface_plots/*.png      各图的三维表面图裁剪 (与原图同名, 左上角标注该图 Ra)
+    out/*.png                各图的三维表面图裁剪 (与原图同名, 左上角标注该图 Ra);
+                             每个区域两张代表图加后缀: 离区域均值最近的一张 _medoid,
+                             Ra 最小的一张 _min (同一张同时满足时带两个后缀)
+    out/min/ out/medoid/     上面两张代表图的副本, 按类别分开存放
 
 用法:
-    python extract_ra.py                  # 处理 data 文件夹下的所有图片
-    python extract_ra.py --batch 5        # 每个区域的图片数 (默认 5)
+    python extract_ra.py                  # 处理 data 文件夹下的所有图片 (每个区域全读)
+    python extract_ra.py --batch 5        # 每个区域只读序号 1~5 的图; 名字不是 前缀-序号 时每 5 张一组
     python extract_ra.py --dir ../Ra      # 指定输入目录 (默认脚本同级的 data)
     python extract_ra.py --out ./result   # 指定输出目录
     python extract_ra.py --no-plot        # 不导出三维表面图
@@ -30,6 +35,8 @@ Zygo 轮廓仪界面截图 -> 面粗糙度 Ra 批量提取
 from __future__ import annotations
 
 import argparse
+import re
+import shutil
 import struct
 import sys
 import time
@@ -77,7 +84,8 @@ INK_THR = 140           # 白字二值化阈值
 # 纯黑绘图区, 含色标与色标数字、三轴刻度, 不含界面边框。
 # 已在 10 张样本上核验: 位置一致, 尺寸 602x325。
 PLOT_BOX = (669, 75, 1271, 400)
-PLOT_DIR = 'surface_plots'      # 裁剪图的输出子文件夹
+PLOT_DIR = 'out'                # 裁剪图的输出子文件夹
+TAG_DIRS = ('min', 'medoid')    # 代表图分类子文件夹: out/min、out/medoid (顺序即文件名后缀顺序)
 INPUT_DIR = 'data'              # 待处理截图的默认目录 (脚本同级的 data 文件夹)
 
 # 本脚本自身的输出产物, 扫描输入时必须排除 (避免输出被当成下一轮的输入)
@@ -258,6 +266,11 @@ def export_plot(path: Path, out_path: Path, label: str | None = None):
     img.save(out_path, format='PNG', compress_level=6)
 
 
+def tagged_stem(stem: str, flags) -> str:
+    """按标记拼出导出文件名: 1-3 -> 1-3_min / 1-3_medoid / 1-3_min_medoid"""
+    return '_'.join([stem] + [f for f in TAG_DIRS if f in flags])
+
+
 # ----------------------------------------------------------------------------
 # 字符切分与识别
 # ----------------------------------------------------------------------------
@@ -325,19 +338,60 @@ def read_unit(path: Path, row):
 # ----------------------------------------------------------------------------
 # 表格输出
 # ----------------------------------------------------------------------------
-def build_table(files, batch_size):
+# 文件名形如 3-4.bmp 或 Si-1.bmp -> 前缀相同的算同一个区域, 前缀不同即不同区域。
+# 前缀不限数字 (3、Si、AreaA 都行); 分组只看前缀, 不按张数切, 否则某个区域多一张/少一张
+# 就会把后面所有区域整体错位 (3-4 和 3-5 会被分到两组)。--batch 只在分组后用来截取前 N 张。
+REGION_NAME_RE = re.compile(r'^(.+)-(\d+)$')
+DEFAULT_BATCH = 5          # 名字不是 前缀-序号 格式时的默认每区域张数
+
+
+def split_groups(recs, batch_size):
+    """按文件名前缀分组; 名字不是 前缀-序号 格式时退回每 batch_size 张一组"""
+    if not all(REGION_NAME_RE.match(r['name']) for r in recs):
+        batch_size = batch_size or DEFAULT_BATCH
+        return [recs[i:i + batch_size] for i in range(0, len(recs), batch_size)]
+
+    # 按首次出现顺序排列, 与 collect_files 的文件顺序一致
+    groups = {}
+    for r in recs:
+        groups.setdefault(REGION_NAME_RE.match(r['name']).group(1), []).append(r)
+    return list(groups.values())
+
+
+def select_files(files, batch_size):
+    """前缀-序号 命名且指定了张数时, 每区域只保留序号最小的前 batch_size 张 (XX-1 ~ XX-N);
+    未指定张数则整个区域的图片全都读"""
+    if not batch_size or not all(REGION_NAME_RE.match(p.stem) for p in files):
+        return files
+
+    groups = {}
+    for p in files:
+        m = REGION_NAME_RE.match(p.stem)
+        groups.setdefault(m.group(1), []).append((int(m.group(2)), p))
+    keep = []
+    for items in groups.values():
+        keep += [p for _, p in sorted(items, key=lambda t: t[0])[:batch_size]]
+    return keep
+
+
+def build_table(batches):
     """
     表格结构 (与示例一致):
       第 1 行: 标题 + 各区域编号
       第 2 行: 总体均值 + 各区域均值
       第 4 行起: 各文件明细
     """
-    batches = [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
+    files = [r for b in batches for r in b]
     means = [float(np.mean([r['ra'] for r in b])) for b in batches]
     overall = float(np.mean([r['ra'] for r in files]))
     for i, b in enumerate(batches, start=1):
         for r in b:
             r['batch'] = i
+            r['flags'] = set()
+        # 每区两张代表图: 离区域均值最近的一张 (medoid) 与 Ra 最小的一张
+        # 并列时 min() 取靠前的一张, 保证结果稳定可复现
+        min(b, key=lambda r: abs(r['ra'] - means[i - 1]))['flags'].add('medoid')
+        min(b, key=lambda r: r['ra'])['flags'].add('min')
 
     # 汇总列直接写成 "区域1" "区域2", 一眼看出每列对应哪一组
     header = ['粗糙度（平均）'] + [f'区域{i}' for i in range(1, len(batches) + 1)]
@@ -350,7 +404,7 @@ def build_table(files, batch_size):
     return header, values, detail, batches, means, overall
 
 
-def write_xlsx(out_path: Path, header, values, detail):
+def write_xlsx(out_path: Path, header, values, detail, row_flags=None):
     """
     写 Excel。
 
@@ -360,6 +414,7 @@ def write_xlsx(out_path: Path, header, values, detail):
         第 3 行  空行
         第 4 行  明细表头
         第 5 行起 各文件明细
+        末行     填色说明 (浅绿=_min, 浅橙=_medoid)
 
     统一的样式规则 (两块表格共用, 保证视觉一致):
         宽度   汇总区合并单元格铺满与明细区同宽, 两块边缘对齐
@@ -367,6 +422,7 @@ def write_xlsx(out_path: Path, header, values, detail):
         表头   加粗 + 浅蓝底 + 居中
         对齐   全部列居中
         数值   写真数值 + 0.000 格式 (避免 Excel 报"数字以文本形式存储")
+        填色   row_flags 按明细行给出代表图标记, 整行填色 (min 优先于 medoid)
 
     注意: 行数与列数必须分开记。此前把列数当行数用, 导致只有前 7 行画了边框。
     """
@@ -384,6 +440,12 @@ def write_xlsx(out_path: Path, header, values, detail):
     HEAD_FILL = PatternFill('solid', fgColor='DCE6F1')
     SUM_FILL = PatternFill('solid', fgColor='F2F2F2')
     HEAD_FONT = Font(bold=True, size=11)
+    # 两种代表图各一种底色, 与 out/ 里的文件名后缀一一对应
+    TAG_FILLS = {
+        'min': PatternFill('solid', fgColor='C6EFCE'),       # 浅绿: 区内 Ra 最小
+        'medoid': PatternFill('solid', fgColor='FCE4D6'),    # 浅橙: 区内最接近均值
+    }
+    LEGEND_FONT = Font(size=9, color='595959')
 
     # 整表统一水平居中; 数值列不设 indent (缩进会挤占宽度, 列窄时显示 ######)
     A_CENTER = Alignment(horizontal='center', vertical='center')
@@ -453,13 +515,23 @@ def write_xlsx(out_path: Path, header, values, detail):
     for i, row in enumerate(detail):
         r = ROW_DET_HEAD + i
         is_head = (i == 0)
+        flags = row_flags[i - 1] if (row_flags and i > 0) else ()
+        row_fill = TAG_FILLS['min'] if 'min' in flags else (
+            TAG_FILLS['medoid'] if 'medoid' in flags else None)
         for j, value in enumerate(row):
             c1, c2 = detail_cols[j]
             put(r, c1, c2, value,
-                fill=HEAD_FILL if is_head else None,
+                fill=HEAD_FILL if is_head else row_fill,
                 font=HEAD_FONT if is_head else None,
                 align=A_CENTER,
                 num_fmt=NUM_FMT if j in (2, 3, 4) else None)
+
+    # ---- 填色说明: 两种底色没有图例就分不清, 补一行小字 ----
+    if row_flags and any(row_flags):
+        put(ROW_DET_LAST + 2, 1, n_cols_total,
+            '填色说明：浅绿 = 区内 Ra 最小 (_min)；浅橙 = 区内最接近均值 (_medoid)',
+            border=False, font=LEGEND_FONT,
+            align=Alignment(horizontal='left', vertical='center'))
 
     # ---- 列宽 (两块表格共用同一套, 保证列对齐) ----
     # 统一的 12: 汇总区各区域跨同样多的列, 列宽相同才能保证区域之间等宽
@@ -507,10 +579,10 @@ def close_open_workbook(path: Path) -> bool:
     return False
 
 
-def write_xlsx_safely(out_path: Path, header, values, detail) -> bool:
+def write_xlsx_safely(out_path: Path, header, values, detail, row_flags=None) -> bool:
     """写 Excel; 文件被 Excel 打开时先自动关闭该工作簿再重试"""
     try:
-        write_xlsx(out_path, header, values, detail)
+        write_xlsx(out_path, header, values, detail, row_flags)
         return True
     except PermissionError:
         pass
@@ -521,7 +593,7 @@ def write_xlsx_safely(out_path: Path, header, values, detail) -> bool:
     for _ in range(10):                                    # 等 Excel 释放文件句柄
         time.sleep(0.2)
         try:
-            write_xlsx(out_path, header, values, detail)
+            write_xlsx(out_path, header, values, detail, row_flags)
             return True
         except PermissionError:
             continue
@@ -591,10 +663,12 @@ def main():
     ap.add_argument('--dir', default=None,
                     help=f'输入目录 (默认: 脚本同级的 {INPUT_DIR} 文件夹)')
     ap.add_argument('--out', default=None, help='输出目录 (默认: 脚本所在目录)')
-    ap.add_argument('--batch', type=int, default=5, help='每个区域的图片数 (默认 5)')
+    ap.add_argument('--batch', type=int, default=None,
+                    help='每个区域取几张图 (5 = 只取序号 1~5); 不给则整个区域全读。'
+                        '文件名不是「前缀-序号」格式时, 作为分批张数 (默认 5)')
     ap.add_argument('--no-plot', action='store_true', help='不导出三维表面图 PNG')
     args = ap.parse_args()
-    if args.batch < 1:
+    if args.batch is not None and args.batch < 1:
         ap.error('--batch 必须为正整数')
 
     # 顺手保证启动器编码正确 (原 _to_gbk.py 的职责)
@@ -615,34 +689,34 @@ def main():
         print(f'[错误] {input_dir} 下没有找到图片文件', file=sys.stderr)
         return 2
 
-    n_batch = (len(files) + args.batch - 1) // args.batch
     print(f'输入目录: {input_dir}')
-    print(f'共 {len(files)} 个文件, 每区域 {args.batch} 张, 共 {n_batch} 个区域\n')
+    if all(REGION_NAME_RE.match(p.stem) for p in files):
+        n_file_all = len(files)
+        files = select_files(files, args.batch)
+        n_region = len({REGION_NAME_RE.match(p.stem).group(1) for p in files})
+        pick = f'每区只取序号 1~{args.batch} 张' if args.batch else '每区全部图片'
+        print(f'共 {n_file_all} 个文件, 按文件名前缀分 {n_region} 个区域, '
+              f'{pick} -> 实际读取 {len(files)} 个\n')
+    else:
+        batch = args.batch or DEFAULT_BATCH
+        n_batch = (len(files) + batch - 1) // batch
+        print(f'共 {len(files)} 个文件, 每区域 {batch} 张, 共 {n_batch} 个区域\n')
 
     plot_dir = out_dir / PLOT_DIR
     plot_done, plot_fail = [], []
     if not args.no_plot:
         plot_dir.mkdir(parents=True, exist_ok=True)
-        # 先清空上次的旧图: 源图删掉/改名后, 残留的 PNG 会被误当成这次的结果
-        removed = 0
-        for stale in plot_dir.glob('*.png'):
-            try:
-                stale.unlink()
-                removed += 1
-            except OSError:
-                pass                      # 被看图软件占着, 留着, 稍后被同名图覆盖
-        if removed:
-            print(f'已清空上次的 {removed} 张旧图: {plot_dir}')
 
     recs, ref_unit = [], None
 
-    def export_one(path: Path, label):
+    def export_one(path: Path, label, stem=None):
         """导出三维表面图; 目标 PNG 被占用或裁剪失败只告警, 不影响 Ra 提取"""
         if args.no_plot:
             return
+        stem = stem or path.stem
         try:
-            export_plot(path, plot_dir / f'{path.stem}.png', label)
-            plot_done.append(path.stem)
+            export_plot(path, plot_dir / f'{stem}.png', label)
+            plot_done.append(stem)
         except OSError as e:
             # Windows 下目标 PNG 被看图程序占用时, Pillow 抛的是 EINVAL(22) 而非 EACCES
             if e.errno in (13, 22):
@@ -702,23 +776,63 @@ def main():
             flag = '   [低置信, 建议与截图核对]'
         print(f'  {p.name:<12} Ra = {ra:>9.3f} nm    PV = {pv:>11.3f}    rms = {rms:>8.3f}{flag}')
 
-        export_one(p, f'Ra={ra:.3f} {unit}')
-
     if not recs:
         print('[错误] 没有成功提取到任何数据', file=sys.stderr)
         return 3
 
-    header, values, detail, batches, means, overall = build_table(recs, args.batch)
+    header, values, detail, batches, means, overall = build_table(
+        split_groups(recs, args.batch))
+
+    # 代表图要等全部 Ra 算完才知道是哪张, 所以导出放到这里, 并直接带上 min / medoid 后缀
+    row_flags = [r['flags'] for r in recs]
+    for r in recs:
+        export_one(r['path'], f'Ra={r["ra"]:.3f} {r["unit"]}',
+                   tagged_stem(r['path'].stem, r['flags']))
+
+    # 代表图后缀会随数据变化 (上次的 _min 这次可能变成 _medoid), 所以 out/ 必须与本次产物
+    # 严格对齐: 删掉所有没写出来的旧 PNG, 否则会残留两个 _min 之类的旧图。
+    # 同时把代表图各复制一份到 out/min、out/medoid, 翻图时不用在几十张里挑。
+    if not args.no_plot:
+        keep = {f'{s}.png' for s in plot_done}
+        sub_keep = {d: set() for d in TAG_DIRS}
+        for r in recs:
+            name = f'{tagged_stem(r["path"].stem, r["flags"])}.png'
+            if name not in keep:
+                continue                     # 导出失败的不复制, 子文件夹里也不该有它
+            for d in TAG_DIRS:
+                if d in r['flags']:
+                    (plot_dir / d).mkdir(exist_ok=True)
+                    shutil.copyfile(plot_dir / name, plot_dir / d / name)
+                    sub_keep[d].add(name)
+
+        stuck = []
+        for folder, names in [(plot_dir, keep)] + [(plot_dir / d, sub_keep[d])
+                                                   for d in TAG_DIRS]:
+            for old in folder.glob('*.png'):
+                if old.name in names:
+                    continue
+                try:
+                    old.unlink()
+                except OSError:
+                    stuck.append(f'{folder.name}/{old.name}')   # 被看图软件占用时删不掉
+        if stuck:
+            print('[警告] 以下旧图删不掉 (可能正被看图软件打开), 会与本次结果混在一起, '
+                  '请关闭后重跑: ' + ', '.join(stuck), file=sys.stderr)
 
     # 先把结果打到屏幕, 即使写盘失败用户也能看到数值
     print('\n--- 粗糙度分析 (面粗糙度 Ra, nm) ---')
     print('区域: ' + '  '.join(f'{i + 1}' for i in range(len(batches))))
     print('均值: ' + '  '.join(f'{m:.3f}' for m in means))
     print(f'总体均值: {overall:.3f} nm  (共 {len(recs)} 个文件)')
+    for i, b in enumerate(batches, start=1):
+        med = next(r for r in b if 'medoid' in r['flags'])
+        low = next(r for r in b if 'min' in r['flags'])
+        print(f'  区域{i}: medoid = {med["name"]} (Ra={med["ra"]:.3f})'
+              f'    min = {low["name"]} (Ra={low["ra"]:.3f})')
 
     # 唯一产物: xlsx
     xlsx_path = out_dir / 'ra_results.xlsx'
-    if not write_xlsx_safely(xlsx_path, header, values, detail):
+    if not write_xlsx_safely(xlsx_path, header, values, detail, row_flags):
         print(f'\n[错误] 无法写入 {xlsx_path.name} —— 该文件正被占用'
               f'(已尝试自动关闭 Excel 工作簿, 仍失败)。\n'
               f'       请手动关闭 Excel 后重新运行。',
@@ -731,6 +845,7 @@ def main():
         print(f'已导出三维表面图: {plot_dir}  ({len(plot_done)} 张 PNG)')
         print('          ' + ', '.join(f'{n}.png' for n in plot_done[:10])
               + (' ...' if len(plot_done) > 10 else ''))
+        print(f'代表图副本: {plot_dir / "min"} 与 {plot_dir / "medoid"}')
     for name, why in plot_fail:
         print(f'[警告] 三维表面图导出失败 {name}: {why}', file=sys.stderr)
 
