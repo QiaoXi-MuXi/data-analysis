@@ -10,26 +10,33 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from nano_config import (CONFIG_NAME, KEYS, build_rows, read_workbook,
+from nano_config import (CONFIG_NAME, GLOBAL_DOC, GLOBAL_KEYS, KEYS,
+                         build_rows, excel_lock_path, read_workbook,
                          write_workbook)
 
 
 def main(argv=None):
     root = Path(__file__).resolve().parent
     path = root / CONFIG_NAME
+    if excel_lock_path(path).exists():
+        print("ERROR: config.xlsx 正在 Excel 中打开，无法写回。"
+              "请保存并关闭 Excel 后重新双击 fill_config.bat。", file=sys.stderr)
+        return 1
     try:
-        old_settings = read_workbook(path)[0] if path.is_file() else {}
+        old_settings, old_globals = read_workbook(path) if path.is_file() else ({}, {})
         # read_workbook 返回按列名索引的字典；build_rows 需要按 KEYS 排列的行
         old = {k: [v.get(key) or "" for key in KEYS]
                for k, v in old_settings.items()}
-    except PermissionError:
-        print("ERROR: config.xlsx 正被 Excel 打开，先关掉再运行", file=sys.stderr)
+    except (PermissionError, OSError) as exc:
+        print(f"ERROR: 读取 config.xlsx 失败：{exc}", file=sys.stderr)
         return 1
     try:
         rows, added, dropped = build_rows(root / "data", old)
-        write_workbook(path, rows)
+        grows = [[k, old_globals.get(k, ""), GLOBAL_DOC[k]] for k in GLOBAL_KEYS]
+        write_workbook(path, rows, grows)
     except PermissionError:
-        print("ERROR: config.xlsx 正被 Excel 打开，先关掉再运行", file=sys.stderr)
+        print("ERROR: config.xlsx 正在 Excel 中打开，无法写回。"
+              "请保存并关闭 Excel 后重新双击 fill_config.bat。", file=sys.stderr)
         return 1
     print(f"data 里有 {len(rows)} 个 xls，config.xlsx 现在 {len(rows)} 行")
     if added:

@@ -71,6 +71,10 @@ def load_config(path):
     """按首表的表头名称读取全部配置行；停用行不检查源文件是否存在。"""
     path = Path(path).resolve()
     if not path.is_file():raise ValueError(f'找不到配置表：{path}，可先运行 --init-config')
+    lock = path.with_name('~$' + path.name)
+    if lock.exists():
+        print(f'提示：{path.name} 正在 Excel 中打开；本次读取磁盘上已保存的版本，'
+              'Excel 里未保存的修改不会生效，建议保存关闭后重跑。')
     wb = load_workbook(path, read_only=True, data_only=False)
     try:
         ws = wb.worksheets[0]

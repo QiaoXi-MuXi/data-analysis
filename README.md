@@ -26,7 +26,7 @@ EXE为便携启动器，移动或分发时复制完整项目目录，保留同�
 |---|---|---|---|
 | [Ra](Ra/README.md) | BMP/图片、Zygo DAT；`ra_config.xlsx` 控制启用行 | `Ra/run.bat` | `Ra/ra_results.xlsx`、`Ra/out/` |
 | [Raman](Raman/README.md) | `Raman/data/` 两列 TXT；`stack.xlsx` 配置堆叠图 | `Raman/run.bat` | `Raman/out/` |
-| [CLSM](CLSM/README.md) | `CLSM/data/3d/` TXT/LSM；命令行参数 | `CLSM/run.bat` | `CLSM/groove_paper_results.xlsx`、`CLSM/out/` |
+| [CLSM](CLSM/README.md) | `CLSM/data/3d/` TXT/LSM；命令行参数 | `CLSM/run.bat` | `CLSM/out/results/groove_paper_results.xlsx`、`CLSM/out/paper_v5/`、`CLSM/out/figures/` |
 | [ER](ER/README.md) | `ER/data/` 中 Excel 模板及 PDF/图片票据 | `ER/run.bat` | `ER/物品验收单_时间戳.xlsx`、`ER/out/` |
 | [sci-pic](sci-pic/README.md) | `templates/` 中的 Excel 模板；GUI 提供样式预览 | `sci-pic/run.bat` | `sci-pic/out/运行时间_编号/` |
 | [Nanoindentation Analysis](Nanoindentation%20Analysis/README.md) | `Nanoindentation Analysis/data/` 内 MTS TestWorks `.xls`；`fill_config.bat` 导入 `config.xlsx` 后由用户设置分组/图例/阈值 | `Nanoindentation Analysis/run.bat` | `Nanoindentation Analysis/out/` |
@@ -45,7 +45,7 @@ EXE为便携启动器，移动或分发时复制完整项目目录，保留同�
 
 ## 数据与方法边界
 
-原始输入默认只读；现有输出路径保留。CLSM 默认运行会在输入检查通过后清理整个本模块 `out/`；长期保存结果请放到该目录外，试算按模块说明指定独立输出。
+原始输入默认只读。CLSM 默认运行会在输入检查通过后清理本模块 `out/` 下的本次结果（`out/runs/` 历史归档保留）；长期保存结果请放到 `out/runs/` 或其他 `out/` 之外的位置，试算按模块说明指定独立输出。
 
 Ra 的 `fill_config.bat` 默认按当前 `data/` 清理过期配置行并备份；显式 `--dir` 时仍为追加导入。Raman 的 `fill_stack.bat` 按当前 TXT 重建配置行，运行前核对输入目录。
 
@@ -64,7 +64,7 @@ CLSM 只测已有形貌，不能由单次扫描推导绝对去除量；paper-v5 
   out/            本地生成结果，不上传
 ```
 
-新模块的代码、配置和说明会随 `sync_github.bat` 自动纳入同步；任意层级的 `data/`、`out/` 及全部内容都排除，包括模块下的嵌套子目录。新模块的结果统一写入 `out/`；不在这些目录里的普通文件会被纳入同步，独立生成目录需另加忽略规则。现有 Ra、CLSM、ER 的模块根目录结果按明确规则排除，保持原工具行为。
+新模块的代码、配置和说明会随 `sync_github.bat` 自动纳入同步；任意层级的 `data/`、`out/` 及全部内容都排除，包括模块下的嵌套子目录。新模块的结果统一写入 `out/` 的二级子目录（如 `out/results/`、`out/figures/`），按类别归类；不在这些目录里的普通文件会被纳入同步，独立生成目录需另加忽略规则。现有 Ra、ER 的模块根目录结果仍按明确规则排除；CLSM 的生成结果已全部统一到 `CLSM/out/`，随 `out/` 规则整目录忽略。
 
 Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓库中，应至少添加代码或说明。不要在模块自己的 `.gitignore` 中重新放行这些目录，也不要强制添加数据或输出文件。
 
@@ -74,7 +74,7 @@ Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓�
 
 - 任意层级的 `data/` 和 `out/`，包括其中所有文件。
 - Ra 的生成结果 `Ra/ra_results.xlsx` 和 `Ra/surface_plots/`。
-- CLSM 的 `groove_results.xlsx`、`groove_paper_results*.xlsx` 及 `.backups/`。
+- CLSM 的整个 `CLSM/out/`（结果工作簿、`paper_v5` 图表与审计、`figures` 二维三维图、`runs` 历史结果）、`.backups/` 以及旧版根目录工作簿。
 - ER 根目录的生成 XLSX。
 - Python 缓存、Office 临时文件与 `.env` 等本地环境配置。
 

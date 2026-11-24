@@ -419,6 +419,16 @@ def norm_header(name):
     return HEADER_ALIASES.get(s, s)
 
 
+def warn_if_excel_open(path):
+    """Excel 打开工作簿时会生成 ~$ 锁文件；读取仍会成功，但读的是磁盘上已保存的版本。"""
+    folder, name = os.path.split(os.path.abspath(path))
+    lock = os.path.join(folder, "~$" + name)
+    if os.path.exists(lock):
+        print("提示：%s 正在 Excel 中打开；本次读取磁盘上已保存的版本，"
+              "Excel 里未保存的修改不会生效。建议保存并关闭后重跑。" % name,
+              file=sys.stderr)
+
+
 def load_stack(path):
     """Read the stack workbook.
 
@@ -821,6 +831,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     if args.stack:
+        warn_if_excel_open(args.stack)
         # 先拉 worker 再读表: 子进程导入 numpy/matplotlib (~0.4 s) 正好被下面的
         # openpyxl 导入和读表 (~0.2 s) 盖住, 否则这段时间纯等。池建不起来就串行。
         pool = start_pool()

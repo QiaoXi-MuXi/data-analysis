@@ -306,6 +306,10 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, default=ROOT / "out", help="输出根目录；每次新建独立的运行子目录")
     parser.add_argument("--check", action="store_true", help="只读检查工作簿和依赖，不生成结果")
     args = parser.parse_args(argv)
+    lock = args.excel.with_name("~$" + args.excel.name)
+    if lock.exists():
+        print(f"提示：{args.excel.name} 正在 Excel 中打开；本次读取磁盘上已保存的版本，"
+              "未保存的修改不会生效。建议保存并关闭后重跑。", file=sys.stderr)
     run_dir = None
     try:
         import openpyxl

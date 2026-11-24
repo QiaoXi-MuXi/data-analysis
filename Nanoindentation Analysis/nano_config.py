@@ -9,14 +9,18 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import re
+from datetime import datetime
 from pathlib import Path
 
 from nano_core import discover_xls, load_config as load_json_config, parse_filename
 
 CONFIG_NAME = "config.xlsx"
 SHEET_NAME = "配置"
+STATE_DIR = "_state"
+SNAPSHOT_NAME = "config_snapshot.json"
 
 HEADERS = ["文件", "图例名称", "样品编号", "测点", "参与(0/1)", "分组", "备注"]
 KEYS = ["file", "label", "sample", "point", "include", "group", "note"]
@@ -131,7 +135,11 @@ def build_rows(data_dir, existing=None):
     for path in files:
         key = file_key(path.name)
         meta = parse_filename(path.name)
-        row = list(old.pop(key, [None] * len(KEYS)))
+        raw = old.pop(key, None)
+        if isinstance(raw, dict):          # 兼容 read_workbook 的 settings dict
+            row = [raw.get(k) for k in KEYS]
+        else:
+            row = list(raw) if raw else [None] * len(KEYS)
         row += [None] * (len(KEYS) - len(row))
         label_val = row[KEYS.index("label")] or Path(path.name).stem
         sample_val = (sample_value(row[KEYS.index("sample")])
@@ -301,6 +309,66 @@ def _merge_globals(base, overrides):
     return cfg
 
 
+def excel_lock_path(path):
+    """Excel 打开文件时会生成 ~$xxx.xlsx 锁文件。"""
+    p = Path(path)
+    return p.with_name("~$" + p.name)
+
+
+def _snapshot_path(config_path):
+    return Path(config_path).resolve().parent / STATE_DIR / SNAPSHOT_NAME
+
+
+def _save_snapshot(config_path, settings, global_rows):
+    """配置读取成功后留一份快照，供文件被占用/损坏时兜底。"""
+    try:
+        path = _snapshot_path(config_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "source": str(Path(config_path).resolve()),
+            "saved": datetime.now().isoformat(timespec="seconds"),
+            "settings": settings,
+            "globals": global_rows,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                       encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def _load_snapshot(config_path):
+    path = _snapshot_path(config_path)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data.get("settings"), dict) else None
+
+
+def _rows_to_settings(rows):
+    """把 build_rows 生成的行转成 read_workbook 风格的 settings dict。"""
+    out = {}
+    for row in rows:
+        rec = dict(zip(KEYS, row))
+        name = str(rec.get("file") or "").strip()
+        if not name:
+            continue
+        out[file_key(name)] = {
+            "file": Path(name).name,
+            "label": str(rec.get("label") or "").strip(),
+            "sample": sample_value(rec.get("sample")),
+            "point": int_value(rec.get("point")),
+            "include": flag01(rec.get("include")),
+            "group": str(rec.get("group") or "").strip(),
+            "note": str(rec.get("note") or "").strip(),
+        }
+    return out
+
+
 def load_settings(config_path=None, data_dir=None, create=True):
     """读取配置表并与 config.json 合并，返回 (cfg, 文件设置 dict)。
 
@@ -323,7 +391,27 @@ def load_settings(config_path=None, data_dir=None, create=True):
         rows, _, _ = build_rows(src)
         write_workbook(xlsx, rows)
         print(f"已按 data/ 生成配置表：{xlsx}（可在表里改设置后重跑）")
-    settings, global_rows = read_workbook(xlsx)
+    elif excel_lock_path(xlsx).exists():
+        print(f"提示：{xlsx.name} 正在 Excel 中打开；本次读取磁盘上已保存的版本，"
+              "Excel 里未保存的修改不会生效。建议保存并关闭 Excel 后重跑。")
+
+    # 读取失败时依次回退：上次成功快照 -> 按 data/ 自动生成默认配置
+    try:
+        settings, global_rows = read_workbook(xlsx)
+        _save_snapshot(xlsx, settings, global_rows)
+    except Exception as exc:
+        print(f"WARNING: 读取 {xlsx.name} 失败（{type(exc).__name__}: {exc}）")
+        snap = _load_snapshot(xlsx)
+        if snap:
+            settings, global_rows = snap["settings"], snap.get("globals") or {}
+            print(f"已回退到上次成功读取的配置快照：{_snapshot_path(xlsx)}"
+                  f"（保存于 {snap.get('saved', '未知时间')}）")
+        else:
+            rows, _, _ = build_rows(src)
+            settings, global_rows = _rows_to_settings(rows), {}
+            print("已回退到按 data/ 自动生成的默认配置"
+                  "（图例名称=文件名，样品编号/测点从文件名解析）。")
+
     for row in settings.values():
         row["label"] = strip_sample_from_label(row.get("label"), row.get("sample"))
         if not row.get("group"):

@@ -71,7 +71,7 @@ if not "%ERRCODE%"=="0" (
     exit /b %ERRCODE%
 )
 
-echo  Output: results\groove_paper_results.xlsx  +  results\out\paper_v5\*.png  +  results\out\2D\*.png  +  results\out\3D\*.png
+echo  Output: out\results\groove_paper_results.xlsx  +  out\paper_v5\*.png  +  out\figures\2D\*.png  +  out\figures\3D\*.png
 echo.
 echo  Finished. Window closes in 3 seconds.
 if not defined DATA_ANALYSIS_NO_PAUSE timeout /t 3 >nul

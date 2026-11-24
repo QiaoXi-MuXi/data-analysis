@@ -10,6 +10,9 @@ out/
 *.wip
 *.mss
 
+# 纳米压痕模块的运行时状态快照（本地生成）。
+/Nanoindentation Analysis/_state/
+
 # Python 缓存与临时文件。
 __pycache__/
 *.pyc
@@ -32,9 +35,8 @@ Desktop.ini
 # ER 本地生成结果。
 /ER/*.xlsx
 
-# CLSM 的生成工作簿和版本回退副本；保留本地文件。
+# CLSM 的生成结果统一在 CLSM/out/ 下（results、paper_v5、figures、runs），
+# 由上面的 out/ 规则整目录忽略；此处只兜底旧版根目录工作簿与修改前备份。
 /CLSM/groove_results.xlsx
 /CLSM/groove_paper_results*.xlsx
 /CLSM/.backups/
-# CLSM 分析输出（剖面审计、出图、结果工作簿）：只留本机。
-/CLSM/results/

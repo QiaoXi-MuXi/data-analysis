@@ -43,8 +43,8 @@ class Command:
 def default_options(root: Path, project: Project) -> dict:
     folder = root / project.key
     return {
-        'input': str(folder / 'data' / '3d' if project.key == 'CLSM' else folder / 'data'),
-        'output': str(folder / 'results' / 'out' if project.key == 'CLSM'
+        'input': str(folder / 'data'),
+        'output': str(folder / 'out' / 'figures' if project.key == 'CLSM'
                       else folder / 'out' if project.key == 'Raman' else folder),
         'config': str(folder / ('ra_config.xlsx' if project.key == 'Ra' else 'stack.xlsx')),
         'template': '', 'mode': 'config' if project.key in ('Ra', 'Raman') else 'default',
@@ -52,7 +52,7 @@ def default_options(root: Path, project: Project) -> dict:
         'xmin': '', 'xmax': '', 'height': '5', 'shift': '0',
         'input_format': 'auto', 'lsm_mode': 'require-calibration', 'scale': '', 'offset': '0',
         'dy': '', 'strip': '12.6', 'count': '9', 'seed': '20261029', 'attempts': '4',
-        'xlsx': str(folder / 'results' / 'groove_paper_results.xlsx'),
+        'xlsx': str(folder / 'out' / 'results' / 'groove_paper_results.xlsx'),
     }
 
 
@@ -141,7 +141,7 @@ def build_command(root: Path, project: Project, options: dict) -> Command:
         args += ['--dir', str(source), '--xlsx', str(xlsx), '--input-format', options['input_format'],
                  '--lsm-height-mode', options['lsm_mode']]
         # 保留默认CLI输出布局；GUI不传--clean-out，避免切换项目时清理既有结果。
-        if output != folder / 'results' / 'out':
+        if output != folder / 'out' / 'figures':
             args += ['--out', str(output)]
         for flag, key, name, kwargs in (
             ('--dy', 'dy', 'Y步距', {'positive': True}),

@@ -33,6 +33,14 @@ from nano_config import file_key, load_settings
 import nano_plots as plots
 
 
+class ExcelLockedError(RuntimeError):
+    """结果工作簿被 Excel / WPS 占用，无法写入。"""
+
+    def __init__(self, path):
+        super().__init__(str(path))
+        self.path = Path(path)
+
+
 def analyze_tests(files, indents, cfg):
     """逐个文件判断其 Test 1..N 次压痕是否可合并为一条代表曲线。
 
@@ -331,6 +339,14 @@ def analyze(cfg, src, out, want_curves=True, want_plots=True, settings=None):
 def write_outputs(analysis, out, want_plots=True):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    # 清理旧 out 之前先确认结果表可写；被 Excel 打开时直接停止，避免删掉上一轮结果。
+    target = out / "nano_results.xlsx"
+    if target.exists():
+        try:
+            with target.open("r+b"):
+                pass
+        except PermissionError as exc:
+            raise ExcelLockedError(target) from exc
     for p in list(out.glob("*")):
         if p.is_file():
             try:
@@ -502,7 +518,10 @@ def write_excel(a, path):
     ws.column_dimensions["A"].width = 110
     for line in (path.parent / "report.md").read_text(encoding="utf-8").splitlines():
         ws.append([line])
-    wb.save(path)
+    try:
+        wb.save(path)
+    except PermissionError as exc:
+        raise ExcelLockedError(path) from exc
 
 
 def _fmt(v, nd=2):
@@ -663,7 +682,15 @@ def main(argv=None):
     cfg, settings = load_settings(args.config, args.src)
     analysis = analyze(cfg, Path(args.src), Path(args.out),
                        want_curves=not args.no_curves, settings=settings)
-    figs = write_outputs(analysis, args.out, want_plots=not args.no_plots)
+    try:
+        figs = write_outputs(analysis, args.out, want_plots=not args.no_plots)
+    except ExcelLockedError as exc:
+        print(f"[错误] 无法写入结果表：{exc.path}", file=sys.stderr)
+        print("[提示] 文件可能正被 Excel / WPS 占用。请保存并关闭其中的 "
+              "nano_results.xlsx 后重新运行。", file=sys.stderr)
+        print("[提示] 若已关闭，请检查该文件是否只读，以及 out 目录是否有写入权限。",
+              file=sys.stderr)
+        return 4
 
     print(f"已分析 {len(analysis['files'])} 个文件，"
           f"{sum(f['n'] for f in analysis['files'])} 次有效压痕")

@@ -7,10 +7,10 @@
 | 输入 | `data/` 内 TXT 或已提供外部高度标定的 LSM，同名 TXT 优先。 |
 | 配置 | 命令行参数及本目录 `lsm_height_calibration.json`；LSM 换算须确认，默认跳过不可处理输入并记录原因。 |
 | 运行 | 双击本目录唯一的 `run.bat`，参数原样传递。 |
-| 输出 | `results/groove_paper_results.xlsx`、`results/out/paper_v5/`、`results/out/2D/`、`results/out/3D/`。默认启动会清理 `results/out/`，重要结果请事先另存。 |
+| 输出 | `out/results/groove_paper_results.xlsx`、`out/paper_v5/`、`out/figures/2D/`、`out/figures/3D/`。默认启动会清理 `out/` 下本次结果（`out/runs/` 历史归档保留），重要结果请事先另存。 |
 | 环境检查 | 运行根目录 `check.bat`；使用共享 `../python/python.exe`，不回退系统 Python。 |
 
-根目录只保留代码、`run.bat`、`README.md`、`TASKS.md` 与高度确认配置 `lsm_height_calibration.json`。`results/` 存放工作簿、`results/out/` 运行产物以及历史独立结果目录（`results/results_*`）；review/verification 报告与示意图在 `reports/`；`.backups/` 为修改前历史备份。下文中带日期的独立结果沿用原目录名，只是整体移入 `results/`。
+根目录只保留代码、`run.bat`、`README.md`、`TASKS.md` 与高度确认配置 `lsm_height_calibration.json`。所有生成结果统一放在 `out/` 的二级子目录下：`out/results/` 存结果工作簿，`out/paper_v5/` 存论文级图表与审计 JSON，`out/figures/` 存 2D/3D 形貌与剖面图及清单，`out/runs/` 存历史独立结果目录（沿用 `results_*` 目录名）；review/verification 报告与示意图在 `reports/`；`.backups/` 为修改前历史备份。`data/` 与 `out/` 均不纳入版本控制，本机保留。
 
 命令行无人值守运行可在当前 PowerShell 设置 `$env:DATA_ANALYSIS_NO_PAUSE='1'`，使失败时直接返回退出码；该设置不取消 Raman 无参数单谱模式的输入提示。检查后可用 `Remove-Item Env:DATA_ANALYSIS_NO_PAUSE` 移除。原始输入及现有输出位置保持原有约定。
 
@@ -75,10 +75,10 @@ LSM 的 X/Y 步距直接取各文件元数据，不再按 TXT 的四舍五入表
 
 2026-11-02新增登记：`20261031`目录的8份LSM均包含可读浮点高度图。用户已明确确认按各文件量程`Z=(1-存储值)×量程`换算，`1、2、3、4.lsm`量程100µm，`2-1、2-3、2-5、2-7.lsm`量程42µm；分别绑定SHA256，旧3、4文件的确认记录继续保留。同名新文件不会继承旧换算。显式`metadata-pending`试算时，若仅名称与旧登记相同但SHA256不同，忽略不匹配的旧确认并走严格元数据试算检查，所有输出仍标“待ZEN核验”；默认定量入口继续拒绝复用旧确认。
 
-这批LSM与目录内TXT并非逐像素相同的数据，不能把它们当成同一个处理结果。尤其LSM的`2-1、2-3、2-5、2-7`与TXT的`2-2、2-4、2-6、2-8`名称不同，自动模式会分别计数。分析本批纯LSM时请显式指定`--input-format lsm`。本次结果独立保存为`results/groove_paper_results_lsm_20261031.xlsx`及`results/results_lsm_20261031/`，现有TXT工作簿、data和`results/out`保持不变。重新生成这些独立结果可在CLSM目录执行：
+这批LSM与目录内TXT并非逐像素相同的数据，不能把它们当成同一个处理结果。尤其LSM的`2-1、2-3、2-5、2-7`与TXT的`2-2、2-4、2-6、2-8`名称不同，自动模式会分别计数。分析本批纯LSM时请显式指定`--input-format lsm`。本次结果独立保存为`out/results/groove_paper_results_lsm_20261031.xlsx`及`out/runs/results_lsm_20261031/`，现有TXT工作簿、data和`out/`中本次结果保持不变。重新生成这些独立结果可在CLSM目录执行：
 
 ```powershell
-..\python\python.exe -B .\extract_groove.py --dir "E:\study\同步\汇报\周报、PPT\研二上\8_261104\pic\20261031" --input-format lsm --out results\results_lsm_20261031 --xlsx results\groove_paper_results_lsm_20261031.xlsx
+..\python\python.exe -B .\extract_groove.py --dir "E:\study\同步\汇报\周报、PPT\研二上\8_261104\pic\20261031" --input-format lsm --out out\runs\results_lsm_20261031 --xlsx out\results\groove_paper_results_lsm_20261031.xlsx
 ```
 
 LSM量程及单位经用户确认不等于完成独立仪器标定；未知辅助记录仍不擅自当作有效性掩码应用。少量无法可靠定位的剖面仍记录并排除，不为填满表格而放宽测量质量要求。
@@ -86,7 +86,7 @@ LSM量程及单位经用户确认不等于完成独立仪器标定；未知辅�
 试算仍会触发批处理原有的 `out` 清理。需要保留现有结果时，用 Python 指定独立输出，省略 `--clean-out`：
 
 ```powershell
-..\python\python.exe -B .\extract_groove.py --dir "数据目录" --input-format lsm --lsm-height-mode metadata-pending --out results\out\lsm_trial --xlsx results\groove_lsm_trial.xlsx
+..\python\python.exe -B .\extract_groove.py --dir "数据目录" --input-format lsm --lsm-height-mode metadata-pending --out out\lsm_trial --xlsx out\results\groove_lsm_trial.xlsx
 ```
 
 `surface_plots.py` 单独重画时也支持上述格式/标定参数。正式批处理不安装新依赖，启动加 `-B` 避免产生字节码缓存。
@@ -117,7 +117,7 @@ LSM三维形貌的显示夸张倍数上限仍为30；为避免深扫描把XY压�
 
 ## Excel 与不同文件数量
 
-默认写入 `results/groove_paper_results.xlsx`；本次为保留旧表，另交付 `results/groove_paper_results_v5.xlsx`。以后关闭占用表格再运行批处理即可生成默认文件。若文件被占用，明确报错，不报告保存成功。
+默认写入 `out/results/groove_paper_results.xlsx`；本次为保留旧表，另交付 `out/results/groove_paper_results_v5.xlsx`。以后关闭占用表格再运行批处理即可生成默认文件。若文件被占用，明确报错，不报告保存成功。
 
 - `核心结论`：按实际成功文件数逐行生成；槽深/槽宽均值和SD、筛查前均值、入选/计划数及状态。冻结表头并提供筛选；打印重复表头且纵向自动分页，不再强压所有文件到一页。
 - `槽宽槽深汇总`：按实际文件数扩展列，跨样品平均公式使用实际末列，支持超过Z列。主指标与旧逐列对照、固定25/50/75%对照分别标注。
@@ -145,12 +145,12 @@ LSM三维形貌的显示夸张倍数上限仍为30；为避免深扫描把XY压�
 直接调用 Python 可避免批处理的旧输出清理，并可指定独立输出：
 
 ```powershell
-..\python\python.exe -B .\extract_groove.py --out results\out\paper_v5 --xlsx results\groove_paper_results_v5.xlsx
+..\python\python.exe -B .\extract_groove.py --out out\paper_v5 --xlsx out\results\groove_paper_results_v5.xlsx
 ```
 
-本次沿用既有批处理 `--clean-out` 行为：输入成功分析后、写入前清空 `results/out/`，含历史版本/审计/其中备份，随后生成本次结果。原有目录边界、链接、只读和文件占用检查保留；直接 Python 只有显式 `--clean-out` 才清理，`--help`/`--selftest`不清理。长期备份须放在 `results/out/` 外。本次修复验证不启用清理，旧结果保留。
+本次沿用既有批处理 `--clean-out` 行为：输入成功分析后、写入前清空 `out/` 下本次结果（`out/results`、`out/paper_v5`、`out/figures`），`out/runs/` 历史归档保留，随后生成本次结果。原有目录边界、链接、只读和文件占用检查保留；直接 Python 只有显式 `--clean-out` 才清理，`--help`/`--selftest`不清理。长期备份须放在 `out/runs/` 或其他 `out/` 之外的位置。本次修复验证不启用清理，旧结果保留。
 
-默认审计/诊断目录为 `results/out/paper_v5/`，默认形貌图为 `results/out/2D/`、`results/out/3D/`；显式`--out`时二维三维图写在该目录下。审计含脚本哈希、输入哈希、参数、候选及入选状态。
+默认审计/诊断目录为 `out/paper_v5/`，默认形貌图为 `out/figures/2D/`、`out/figures/3D/`；显式`--out`时二维三维图写在该目录下。审计含脚本哈希、输入哈希、参数、候选及入选状态。
 
 ## 数据与图像边界
 
@@ -171,32 +171,32 @@ TXT输入文件没有Y标定，默认按X中位步长假定，本批约0.63µm�
 
 正常运行另为每份输入生成：
 
-- `results/out/2D/文件名_profile.png`：每个分区一个子图，显示最终入选的二维剖面；宽深在不同候选入选时分别画出，标明实际X位置、基准线、槽宽交点、槽底以及W/D箭头。
-- `results/out/3D/文件名_profile.png`：把入选剖面放回实际X位置，显示X/Y/相对基准高度三维曲线、开口交点及深度线段，不在离散剖面之间插值出表面。
-- `results/out/profile_plot_manifest.json`：取样位置、入选角色、宽深值、图像哈希、坐标范围及显示参数。
+- `out/figures/2D/文件名_profile.png`：每个分区一个子图，显示最终入选的二维剖面；宽深在不同候选入选时分别画出，标明实际X位置、基准线、槽宽交点、槽底以及W/D箭头。
+- `out/figures/3D/文件名_profile.png`：把入选剖面放回实际X位置，显示X/Y/相对基准高度三维曲线、开口交点及深度线段，不在离散剖面之间插值出表面。
+- `out/figures/profile_plot_manifest.json`：取样位置、入选角色、宽深值、图像哈希、坐标范围及显示参数。
 
-每条剖面扣除各自局部基准后显示，不能把它的相对高度与原始形貌图的绝对Z直接混用。缺少真实支撑的行留空；图中注明Y步距是否假定。二维/三维剖面均300dpi；三维剖面竖向显示夸张8倍，真实坐标刻度不变。原`results/out/2D/文件名.png`和`results/out/3D/文件名.png`形貌图继续输出。显式`--out`时这些文件放在指定目录的2D/3D内，`--no-plot`全部跳过。
+每条剖面扣除各自局部基准后显示，不能把它的相对高度与原始形貌图的绝对Z直接混用。缺少真实支撑的行留空；图中注明Y步距是否假定。二维/三维剖面均300dpi；三维剖面竖向显示夸张8倍，真实坐标刻度不变。原`out/figures/2D/文件名.png`和`out/figures/3D/文件名.png`形貌图继续输出。显式`--out`时这些文件放在指定目录的2D/3D内，`--no-plot`全部跳过。
 
 ## ZEN 2010 LSM 源文件只读检查
 
 独立工具 `inspect_zen_lsm.py` 最初用于验证 350.lsm 的小端、无压缩、单通道、单时刻 XYZ 堆栈及嵌入记录；本次又验证了同批其余6份文件的结构读取，不是通用 LSM 转换器。使用既有 NumPy/Matplotlib，无新增依赖。
 
 ```powershell
-..\python\python.exe -B .\inspect_zen_lsm.py "原始350.lsm完整路径" --out results\out\lsm_source_check_new --compare-txt data\350.txt
+..\python\python.exe -B .\inspect_zen_lsm.py "原始350.lsm完整路径" --out out\lsm_source_check_new --compare-txt data\350.txt
 ```
 
-输出目录必须尚不存在，避免覆盖结果。独立检查工具导出原始数组 NPZ、元数据 JSON 和对照图；不替换 TXT，不更新测量 Excel。高度图存储值及原始换算字段分别保留，尚未核实的高度单位/方向不自动推断。详见 `reports/lsm_source_review_20261030.md`。本批7份的实际 X/Y 间距均为 0.6251697265622246 µm；正式分析入口现已按每份LSM自身元数据读取步距，TXT仍沿用原规则。批处理的既有清理会删除 `results/out` 内这些结果，需要长期保留时请复制到 `results/out` 外。
+输出目录必须尚不存在，避免覆盖结果。独立检查工具导出原始数组 NPZ、元数据 JSON 和对照图；不替换 TXT，不更新测量 Excel。高度图存储值及原始换算字段分别保留，尚未核实的高度单位/方向不自动推断。详见 `reports/lsm_source_review_20261030.md`。本批7份的实际 X/Y 间距均为 0.6251697265622246 µm；正式分析入口现已按每份LSM自身元数据读取步距，TXT仍沿用原规则。批处理的既有清理会删除 `out/` 下的这些结果，需要长期保留时请复制到 `out/runs/` 或 `out/` 之外。
 
 
 ## 2026-11-02 斜直槽校正版本
 
 运行方式、data输入及同名TXT优先规则不变，该历史版本使用paper-v5-normal测量；当前分级策略见下文。`--selftest`增加15个方向的解析槽宽/槽深、不同XY步距、缺失传播、交叉/曲槽拒绝与原生横纵逐元素回归。合成检验不能替代在ZEN同位置的独立测量。
 
-本次以独立输出保留旧结果：`results/groove_paper_results_normal_20261102.xlsx`及`results/results_normal_20261102/`为当前data的TXT；`results/groove_paper_results_lsm_normal_20261031.xlsx`及`results/results_lsm_normal_20261031/`为20261031批次纯LSM。成功数及未通过方向检查的输入以各运行清单为准，不能将跳过项当零。旧结果没有追溯性地套用新角度；以后正常双击BAT仍按原有规则清理 `results/out` 并写默认工作簿，已打开Excel应先关闭。
+本次以独立输出保留旧结果：`out/results/groove_paper_results_normal_20261102.xlsx`及`out/runs/results_normal_20261102/`为当前data的TXT；`out/results/groove_paper_results_lsm_normal_20261031.xlsx`及`out/runs/results_lsm_normal_20261031/`为20261031批次纯LSM。成功数及未通过方向检查的输入以各运行清单为准，不能将跳过项当零。旧结果没有追溯性地套用新角度；以后正常双击BAT仍按原有规则清理 `out/` 下本次结果并写默认工作簿，已打开Excel应先关闭。
 
 
 ## 2026-11-02 分级方向与局部参考版本
 
 当前版本paper-v5-local，默认data输入和TXT优先不变，run.bat自动选择整槽直线或局部法向；标准条带失败时使用固定半宽备用。--selftest保留15方向直槽与原有筛查自检，并新增6种精确欧氏距离曲槽、坐标平面真值、缺失及几何失效传播检查。此类合成验证不能替代ZEN同位置人工复核。
 
-本轮结果单独保存：`results/groove_paper_results_local_20261102.xlsx` / `results/results_local_20261102`；纯LSM为`results/groove_paper_results_lsm_local_20261031.xlsx` / `results/results_lsm_local_20261031`。8份输入均保留记录；是否有主均值、局部参考或未纳入汇总以“质量与局部参考”和候选明细为准，不能将空白或跳过当零。后续双击run.bat仍写默认工作簿并按既有规则清理 `results/out`，旧的本轮独立结果保留。
+本轮结果单独保存：`out/results/groove_paper_results_local_20261102.xlsx` / `out/runs/results_local_20261102`；纯LSM为`out/results/groove_paper_results_lsm_local_20261031.xlsx` / `out/runs/results_lsm_local_20261031`。8份输入均保留记录；是否有主均值、局部参考或未纳入汇总以“质量与局部参考”和候选明细为准，不能将空白或跳过当零。后续双击run.bat仍写默认工作簿并按既有规则清理 `out/` 下本次结果，旧的本轮独立结果保留。

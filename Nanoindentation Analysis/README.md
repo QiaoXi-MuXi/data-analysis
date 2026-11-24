@@ -42,6 +42,8 @@
 | `分组` | 柱状图分组名（如 `0.39J/cm²`）：同一分组内不同样品编号的柱子紧挨着，不同分组之间留间隔；留空时从图例名称自动去掉末尾样品编号得到（如 `0.39J/cm²(1100)` → `0.39J/cm²`），可手动覆盖 |
 | `备注` | 只写给自己看，不参与计算 |
 
+**配置兜底**：`run.bat` 只读 `config.xlsx` 这一份配置。若它正在 Excel 中打开，程序会提示"读到的是磁盘上已保存的版本"；若读取失败（被占用/损坏），依次回退到 `_state/config_snapshot.json`（上次成功读取的快照）→ 按 `data/` 自动生成的默认配置，保证分析不中断。`fill_config.bat` 检测到 Excel 占用时会直接提示先关闭，不做任何改动。
+
 「全局设置」表：
 
 | 参数 | 默认值 | 含义 |
@@ -150,7 +152,8 @@
 Nanoindentation Analysis\
   README.md / TASKS.md
   config.json            默认阈值兜底
-  config.xlsx            用户导入/设置表（由 fill_config.bat 生成）
+  config.xlsx            用户导入/设置表（由 fill_config.bat 生成，唯一配置源）
+  _state\                config.xlsx 读取成功后的快照（文件被占用/损坏时兜底）
   nano_config.py         Excel 配置读写
   nano_analysis.py       主入口：流程调度、统计、报告与输出
   nano_core.py           读取 xls/文件名/RTF，统计工具

@@ -173,7 +173,7 @@ def main(argv=None):
     from clsm_inputs import add_input_arguments, lsm_options
     parser = argparse.ArgumentParser(description="仅导出CLSM二维/三维形貌图")
     parser.add_argument("--dir", type=Path, default=Path(__file__).resolve().parent / "data")
-    parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "results" / "out")
+    parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "out" / "figures")
     parser.add_argument("--dy", type=float, default=None)
     add_input_arguments(parser)
     args = parser.parse_args(argv)

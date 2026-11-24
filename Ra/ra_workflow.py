@@ -380,6 +380,10 @@ def run(api):
             print(f'[错误] 无法读写结果表：{book}',file=sys.stderr)
             print('[提示] 文件可能正被 Excel / WPS 占用。请保存并关闭其中的 ra_results.xlsx 后重新运行。',file=sys.stderr)
             print('[提示] 若已关闭，请检查该文件是否只读，以及输出目录是否有写入权限。',file=sys.stderr)
+        elif config_path in paths:
+            print(f'[错误] 无法写入配置表：{config_path}',file=sys.stderr)
+            print('[提示] 文件可能正被 Excel / WPS 占用。请保存并关闭其中的 ra_config.xlsx 后重新运行。',file=sys.stderr)
+            print('[提示] 若已关闭，请检查该文件是否只读，以及配置目录是否有写入权限。',file=sys.stderr)
         else:
             print(f'[错误] {error}',file=sys.stderr)
         return 4

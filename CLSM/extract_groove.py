@@ -568,6 +568,21 @@ def close_lock_warning(xlsx: Path):
     print("       请关闭该工作簿后重跑；本次结果未保存（下方屏幕结果不受影响）。")
 
 
+def ensure_workbook_writable(xlsx: Path) -> bool:
+    """运行前预检结果工作簿；被 Excel/WPS 占用时立即停止，不做任何清理。"""
+    if not xlsx.exists():
+        return True
+    try:
+        with xlsx.open("r+b"):
+            pass
+        return True
+    except PermissionError:
+        print(f"\n[错误] 无法写入结果工作簿 {xlsx}，文件可能正被 Excel / WPS 打开。")
+        print("       请保存并关闭该工作簿后重跑；本次未清理旧 out，也未写入结果。")
+        print("       若已关闭，请检查该文件是否只读，以及目标目录是否有写入权限。")
+        return False
+
+
 def write_excel(results, xlsx: Path, skipped=()):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -1492,8 +1507,8 @@ def find_inputs(data_dir: Path, input_format="auto", samples=None):
     return discover_inputs(data_dir, input_format, samples)[0]
 
 
-def clean_output_directory(out_root: Path, input_dir: Path):
-    """核对边界并预检删除权限，再清空out内容；不跟随任何链接。"""
+def clean_output_directory(out_root: Path, input_dir: Path, preserve=()):
+    """核对边界并预检删除权限，再清空out内容；preserve中的一级子目录（历史归档）保留。不跟随任何链接。"""
     import os
     import stat
 
@@ -1523,6 +1538,8 @@ def clean_output_directory(out_root: Path, input_dir: Path):
 
     def collect(folder):
         for path in folder.iterdir():
+            if folder == root and path.name in preserve:
+                continue
             if is_link(path):
                 raise ValueError(f"out中包含链接，已停止清理：{path}")
             if not path.resolve().is_relative_to(resolved):
@@ -1566,13 +1583,13 @@ def clean_output_directory(out_root: Path, input_dir: Path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="CLSM 三维形貌槽宽/槽深批量测量")
     ap.add_argument("--dir", default=None, help="输入目录（默认脚本同级 data）")
-    ap.add_argument("--out", default=None, help="图表与审计输出目录（默认 results/out/paper_v5）；指定时2D/3D图也写入该目录")
+    ap.add_argument("--out", default=None, help="图表与审计输出目录（默认 out/paper_v5）；指定时2D/3D图也写入该目录")
     ap.add_argument("--no-plot", action="store_true", help="只出 Excel，不导出示意图")
     ap.add_argument("--selftest", action="store_true", help="运行合成数据自检")
     ap.add_argument("--groove-axis", choices=("auto", "horizontal", "vertical"), default="auto",
                     help="默认auto识别直槽并在物理XY中校正，沿槽X/法向Y；horizontal/vertical仅限制主方向，仍校正斜切")
-    ap.add_argument("--clean-out", action="store_true", help="写入结果前清空本模块 results/out；启动批处理自动启用")
-    ap.add_argument("--xlsx", default=None, help="Excel 保存位置（默认脚本同级 results/groove_paper_results.xlsx）")
+    ap.add_argument("--clean-out", action="store_true", help="写入结果前清空本模块 out/ 下的本次结果（out/runs 归档保留）；启动批处理自动启用")
+    ap.add_argument("--xlsx", default=None, help="Excel 保存位置（默认脚本同级 out/results/groove_paper_results.xlsx）")
     ap.add_argument("--dy", type=float, default=None, help="原始Y步距（µm），在纵槽交换XY之前应用；TXT省略时按X步距假定；LSM省略时使用文件Y标定")
     ap.add_argument("--strip-width-um",type=float,default=STRIP_WIDTH_UM,help="平均剖面条带物理宽度µm，默认12.6")
     ap.add_argument("--profile-positions",type=float,nargs='+',default=None,help="可选固定初始位置，0–1严格递增；无效候选仍在各自分区内补测")
@@ -1587,8 +1604,11 @@ def main(argv=None):
 
     here = Path(__file__).resolve().parent
     data_dir = Path(args.dir) if args.dir else here / "data"
-    out_dir = Path(args.out) if args.out else here / "results" / "out" / "paper_v5"
-    xlsx = Path(args.xlsx) if args.xlsx else here / "results" / "groove_paper_results.xlsx"
+    out_dir = Path(args.out) if args.out else here / "out" / "paper_v5"
+    xlsx = Path(args.xlsx) if args.xlsx else here / "out" / "results" / "groove_paper_results.xlsx"
+    # 先确认结果工作簿可写，避免分析并清理 out 之后才在写 Excel 时失败。
+    if not ensure_workbook_writable(xlsx):
+        return 4
     try:
         files, ignored = discover_inputs(data_dir, args.input_format, args.samples)
     except ValueError as exc:
@@ -1657,7 +1677,7 @@ def main(argv=None):
 
     if args.clean_out:
         try:
-            removed = clean_output_directory(here / "results" / "out", data_dir)
+            removed = clean_output_directory(here / "out", data_dir, preserve=("runs",))
         except (OSError, ValueError) as exc:
             print(f"[错误] 旧结果清理失败，停止写入本次结果：{exc}")
             return 5
@@ -1691,7 +1711,7 @@ def main(argv=None):
         plot_depth_comparison(results, out_dir / "depth_comparison.png")
         print(f"  深度诊断图 {len(made) + 1} 张 -> {out_dir}")
         from surface_plots import plot_surfaces
-        surface_root = out_dir if args.out else here / "results" / "out"
+        surface_root = out_dir if args.out else here / "out" / "figures"
         plot_surfaces(results, surface_root)
         print(f"  二维/三维形貌图各 {len(results)} 张 -> {surface_root / '2D'}、{surface_root / '3D'}")
         from profile_plots import plot_profiles

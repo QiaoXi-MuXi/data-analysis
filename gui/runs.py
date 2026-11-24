@@ -74,7 +74,8 @@ def prepare_run(root, project, options, document=None):
         effective = deepcopy(options)
         effective['output'] = str(folder / 'results')
         if project.key == 'CLSM':
-            effective['xlsx'] = str(folder / 'results' / Path(options['xlsx']).name)
+            effective['output'] = str(folder / 'out')
+            effective['xlsx'] = str(folder / 'out' / 'results' / Path(options['xlsx']).name)
         if configured:
             config = folder / 'config.xlsx'
             with config.open('xb') as stream:
