@@ -36,3 +36,5 @@ Desktop.ini
 /CLSM/groove_results.xlsx
 /CLSM/groove_paper_results*.xlsx
 /CLSM/.backups/
+# CLSM 分析输出（剖面审计、出图、结果工作簿）：只留本机。
+/CLSM/results/
