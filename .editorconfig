@@ -1,0 +1,16 @@
+root = true
+
+[*]
+insert_final_newline = true
+
+[*.{py,md,txt}]
+charset = utf-8
+end_of_line = lf
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.bat]
+# 现有中文批处理沿用GBK；EditorConfig不声明字符集，避免自动转成UTF-8。
+end_of_line = crlf

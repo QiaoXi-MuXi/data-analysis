@@ -73,6 +73,16 @@ FIT_WIN = 30.0                # +- window for the peak-centre fit, cm-1
 BASE_WIN = 60.0               # +- window for the baseline search, cm-1
 MERGE_DX = 15.0               # maxima closer than this are one peak
 MAX_LABELS = 10
+# 激光线（瑞利散射）漏光：0 cm-1 附近那个很尖的假峰不是拉曼峰，排除掉。
+# 排除以 zero_at（校正后的激光线位置）为中心、半宽 ZERO_GUARD cm-1 的区间。
+# 设 0 可关闭排除。
+ZERO_GUARD = 50.0
+
+# 自适应峰高阈值: thr = max(AUTO_K_SIGMA * 噪声σ, AUTO_PEAK_RATIO * 最强峰H)。
+# 噪声下限压掉随机毛刺(弱信号谱靠它兜底), 相对主峰比例压掉高动态谱里的中等
+# 杂散峰。σ 用差分 MAD 稳健估计。参数经多谱标定, 细节见 auto_threshold()。
+AUTO_K_SIGMA = 2.5
+AUTO_PEAK_RATIO = 0.011
 
 
 def pick_font():
@@ -169,14 +179,57 @@ def peak_center(x, y, ys, i):
     return mu
 
 
-def find_peaks(x, y, ys, h_min, max_labels=MAX_LABELS):
+def noise_sigma(y):
+    """用差分的中位数绝对偏差稳健估计噪声标准差。
+
+    白噪声下 diff 的 MAD*1.4826 ≈ sigma*sqrt(2), 故再除以 sqrt(2)。
+    MAD 抗异常值, 尖峰和基线漂移不会把它拉高。读原始 y (非平滑) 更准。
+    """
+    d = np.diff(y)
+    med = np.median(d)
+    return float(1.4826 * np.median(np.abs(d - med)) / np.sqrt(2.0))
+
+
+def auto_threshold(x, y, k_sigma=AUTO_K_SIGMA, ratio=AUTO_PEAK_RATIO,
+                   zero_at=0.0, zero_guard=ZERO_GUARD):
+    """为一条谱算自适应峰高阈值: max(k_sigma*σ, ratio*最强峰H)。
+
+    两条约束缺一不可:
+      - 噪声下限 k_sigma*σ 让弱信号谱也有一个统计下限, 不至于把随机毛刺当峰;
+      - 相对主峰比例 ratio*H_max 在高动态范围的谱上自动抬高阈值, 压掉中等
+        杂散峰 —— 这是固定噪声倍数做不到的 (最弱真峰可能比杂峰还矮, 但它们
+        与主峰的强度比稳定)。
+    σ 用 noise_sigma() 稳健估计; 最强峰 H 用与 find_peaks 一致的
+    baseline_under 定义在排除激光线后的局部极大里取。
+    返回 (阈值, σ, 最强峰H); 没有候选峰时退回 k_sigma*σ。
+    """
+    ys = smooth(y)
+    sig = noise_sigma(y)
+    hs = []
+    for i in local_maxima(ys):
+        if zero_guard and abs(x[i] - zero_at) <= zero_guard:
+            continue
+        hs.append(float(y[i]) - baseline_under(x, ys, i))
+    hmax = max(hs) if hs else 0.0
+    return max(k_sigma * sig, ratio * hmax), sig, hmax
+
+
+def find_peaks(x, y, ys, h_min, max_labels=MAX_LABELS,
+               zero_at=0.0, zero_guard=ZERO_GUARD):
     """Peaks whose height above baseline H = I_max - I_baseline clears h_min.
 
     max_labels keeps the tallest few, so a crowded plot labels the peaks that
     matter instead of the leftmost ones.
+
+    zero_at / zero_guard 排除激光线（瑞利散射）漏光造成的假峰：0 cm-1 附近
+    那个又尖又窄的峰不是拉曼峰。zero_at 是激光线所在的波数（单谱模式校正后
+    等于 shift，堆叠模式为 0），zero_guard 是排除半宽；用 0 关闭排除。
     """
     found = []
     for i in local_maxima(ys):
+        # 激光线漏光：落在排除区内的局部极大直接丢掉，不做拟合
+        if zero_guard and abs(x[i] - zero_at) <= zero_guard:
+            continue
         base = baseline_under(x, ys, i)
         h = float(y[i]) - base
         if h >= h_min:
@@ -308,7 +361,12 @@ def render(x, y, peaks, out_path, xlim=None, centers=None, normalize=False):
     # Pin the axis to the requested window rather than the data extent: the first
     # and last samples rarely land exactly on the limits, and letting them set the
     # range pushes the boundary tick labels out of view.
-    lo, hi = (x[0], x[-1]) if xlim is None else (float(xlim[0]), float(xlim[1]))
+    # 单边 xlim: 空的那端回退到数据边界
+    if xlim is None:
+        lo, hi = x[0], x[-1]
+    else:
+        lo = float(xlim[0]) if xlim[0] is not None else float(x[0])
+        hi = float(xlim[1]) if xlim[1] is not None else float(x[-1])
     ax.set_ylim(ymin - 0.02 * span, ymax + 0.20 * span)
     style_axes(ax, fig, lo, hi, y_numbers=not normalize, y_ticks=not normalize)
     if normalize:
@@ -373,7 +431,8 @@ def load_stack(path):
         offset     vertical offset; empty = automatic spacing
         peaks      1/0 - label this curve's peak positions
         height     peak threshold H, counts on the raw data; empty = --height
-        xmin/xmax  optional shared axis window; empty = full data range
+        xmin/xmax  optional shared axis window; either side may be left empty
+                   (that side falls back to the data boundary); both empty = full range
     Blank rows and rows whose first cell starts with # are ignored.
     """
     try:
@@ -425,9 +484,11 @@ def load_stack(path):
         # 归一化和原始强度混在一张图里，弱的谱会被压成一条线，没法比
         raise ValueError("normalize must be the same (all 1 or all 0) for every "
                          "row in %s" % path)
-    if (window[0] is None) != (window[1] is None):
-        raise ValueError("xmin and xmax must be given together in %s" % path)
-    return rows, (None if window[0] is None else (window[0], window[1]))
+    # 允许只填一端: 空的那端在切窗/画轴时自动取数据边界, 不必两端都填。
+    # 两端都空时返回 None, 沿用"整段数据"的语义。
+    if window[0] is None and window[1] is None:
+        return rows, None
+    return rows, (window[0], window[1])
 
 
 def resolve_src(src, name):
@@ -457,8 +518,14 @@ def render_stack(rows, det, out_path, xlim=None):
             y = (y - y.min()) / (span if span else 1.0)
         curves.append((r, d["path"], d["x"], y, y_raw))
 
-    lo = float(xlim[0]) if xlim else min(c[2].min() for c in curves)
-    hi = float(xlim[1]) if xlim else max(c[2].max() for c in curves)
+    # 单边 xlim: 空的那端用数据边界补齐
+    data_lo = min(c[2].min() for c in curves)
+    data_hi = max(c[2].max() for c in curves)
+    if xlim is None:
+        lo, hi = data_lo, data_hi
+    else:
+        lo = float(xlim[0]) if xlim[0] is not None else data_lo
+        hi = float(xlim[1]) if xlim[1] is not None else data_hi
 
     spans = [float(y.max() - y.min()) or 1.0 for _, _, _, y, _ in curves]
     # 要标峰位时留出"峰顶到上一条谱基线"的空间，否则标签会被上一条谱的峰穿过
@@ -655,15 +722,16 @@ def render_one(job):
     拿到返回的数据再画合并图, 读文件和找峰都只做一遍。
 
     job: (path, win_lo, win_hi, shift, do_peaks, thr, max_labels,
-          out_path, normalize, xlim)
+          out_path, normalize, xlim, zero_guard)
         win_lo/win_hi  None = 用数据自身范围
         shift          峰位校正量, 加到 xw 上
         xlim           画轴范围, None = 用窗口数据自身范围
+        zero_guard     激光线排除半宽; 0 = 关闭
     读文件失败放 err, 写图失败放 werr, 都不抛异常, 免得一个坏文件毁掉整批。
     窗口内点数不足 8 个时不画图 (n 会小于 8), 由调用方决定怎么报。
     """
     (path, win_lo, win_hi, shift, do_peaks, thr, max_labels,
-     out_path, normalize, xlim) = job
+     out_path, normalize, xlim, zero_guard) = job
     try:
         x, y = load_txt(path)
     except Exception as exc:
@@ -678,7 +746,8 @@ def render_one(job):
     peaks, centers = [], []
     if do_peaks and len(xw) >= 8:
         ys = smooth(yw)
-        peaks = find_peaks(xw, yw, ys, thr, max_labels=max_labels)
+        peaks = find_peaks(xw, yw, ys, thr, max_labels=max_labels,
+                           zero_at=shift, zero_guard=zero_guard)
         centers = [peak_center(xw, yw, ys, i) for _, i, _ in peaks]
     werr = None
     if out_path is not None and len(xw) >= 8:
@@ -705,6 +774,32 @@ def run_jobs(jobs, pool=None):
         return [render_one(j) for j in jobs]
 
 
+def prepare_out(out_dir):
+    """建立输出目录, 并清掉上次运行留下的旧文件 (png / csv 等)。
+
+    不清空的话, data 里已经删掉的谱对应的旧 png 会一直躺在 out 里,
+    让人误以为是这次生成的。只删普通文件, 不动子目录; 被占用的文件
+    删不掉就警告并跳过, 不让整个出图失败。
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    removed, failed = 0, []
+    for name in os.listdir(out_dir):
+        path = os.path.join(out_dir, name)
+        if not (os.path.isfile(path) or os.path.islink(path)):
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            failed.append(name)
+    if removed:
+        print("  cleared %d old file(s) from %s" % (removed, out_dir))
+    if failed:
+        print("  WARNING: 无法清除旧文件(可能被占用): %s"
+              % ", ".join(failed), file=sys.stderr)
+    return removed
+
+
 def main(argv=None):
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(description="Plot Raman spectra over a window.")
@@ -715,6 +810,9 @@ def main(argv=None):
     ap.add_argument("--shift", type=float, default=0.0,
                     help="peak-position correction in cm-1: every wavenumber is "
                          "moved by this amount, positive to the right")
+    ap.add_argument("--zero-guard", type=float, default=ZERO_GUARD,
+                    help="ignore peaks within this half-width (cm-1) of the "
+                         "laser line at zero; 0 disables the guard")
     ap.add_argument("--stack", default=None,
                     help="xlsx listing spectra to stack on one figure; each row "
                          "also gets its own single-spectrum figure")
@@ -734,7 +832,7 @@ def main(argv=None):
                 return 1
             if args.xmin is not None and args.xmax is not None:
                 window = (args.xmin, args.xmax)
-            os.makedirs(args.out, exist_ok=True)
+            prepare_out(args.out)
             out_path = os.path.join(args.out, "stack.png")
 
             # 读文件、找峰、画单谱图三件事都只依赖一个文件, 合成一个任务按文件
@@ -753,7 +851,7 @@ def main(argv=None):
                              window[1] if window else None,
                              0.0, r["peaks"], thr, MAX_LABELS,
                              os.path.join(args.out, stem + ".png"),
-                             r["normalize"], window))
+                             r["normalize"], window, args.zero_guard))
             det = run_jobs(jobs, pool)
         finally:
             if pool is not None:
@@ -803,11 +901,11 @@ def main(argv=None):
         print("ERROR: --xmax must be greater than --xmin", file=sys.stderr)
         return 2
 
-    os.makedirs(args.out, exist_ok=True)
     files = sorted(glob.glob(os.path.join(args.src, "*.txt")))
     if not files:
         print("ERROR: no .txt files in %s" % args.src, file=sys.stderr)
         return 1
+    prepare_out(args.out)
 
     # 先把 worker 拉起来不等待: 子进程导入 numpy/matplotlib 的 0.4 s 正好被
     # 下面的读文件和峰检测盖住, 否则并行省下的时间会被进程启动吃掉一半。
@@ -826,7 +924,7 @@ def main(argv=None):
              os.path.join(args.out,
                           safe_stem(os.path.splitext(os.path.basename(path))[0])
                           + ".png"),
-             False, (args.xmin, args.xmax)) for path in files]
+             False, (args.xmin, args.xmax), args.zero_guard) for path in files]
     try:
         res = run_jobs(jobs, pool)
     finally:

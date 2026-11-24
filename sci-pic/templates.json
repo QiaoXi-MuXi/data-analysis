@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "roughness",
+      "title": "柱状折线图",
+      "workbook": "templates/sci_pic.xlsx",
+      "preview": "previews/roughness.png",
+      "plot_type": "柱状折线",
+      "description": "同一组数值以柱形和折线展示，适合按阶段或顺序比较。青蓝柱形、深蓝折线、四边闭合图框。",
+      "example": "7 个阶段的粗糙度示例；实际名称、单位和数值由工作簿决定。"
+    },
+    {
+      "id": "removal_rate",
+      "title": "双组对比柱状图",
+      "workbook": "templates/removal_rate.xlsx",
+      "preview": "previews/removal_rate.png",
+      "plot_type": "双组柱状",
+      "description": "两组独立条件以浅蓝、深蓝柱形比较，可用竖向箭头标注第二组/第一组的比值。四边闭合图框。",
+      "example": "去除率 304.2 与 1573.8 nm/h，示例比值 5.17×；不代表统计显著性。"
+    }
+  ]
+}

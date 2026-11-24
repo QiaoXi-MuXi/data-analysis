@@ -2,14 +2,54 @@
 
 Windows 下的实验数据处理工具，包含 Zygo 面粗糙度 Ra 提取、Raman 光谱绘图与 CLSM 槽宽/槽深测量。
 
+## 桌面工作台
+
+双击根目录 **`DataAnalysis.exe`** 打开 Windows 原生桌面窗口，在左侧切换 Ra、Raman、CLSM、ER 和 sci-pic 科研绘图。启动时不弹控制台，应用与任务栏使用统一图标；重复启动切回已有窗口，启动失败显示中文提示。Ra/Raman 支持直接编辑样本表和右侧参数、批量设置、撤销/重做；项目以 JSON 保存，兼容导入 Excel/CSV 和导出 CSV。界面提供后台分析、折叠日志、运行历史及图片/工作簿/CSV/JSON结果预览。
+
+命令行运行和Excel配置继续可用。GUI每次分析在所选输出位置下新建独立的 `runs/时间戳_编号/`，保存配置快照、输入摘要和结果，结果页按本次产物显示；Ra/ER默认位于模块的 `out/runs/`。CLSM的GUI入口不执行整目录清理。任务运行中可切换项目，同模块不重复启动；完成后再关闭工作台。命令行运行的结果位置及处理行为保留。
+
+Ra样本页提供“一键配置”：可按BMP/DAT等后缀批量设置数值标注开关、字号、颜色、位置和描边，支持预览及一次撤销；Excel配置导出包含相同的可编辑标注列，原有Excel和JSON继续兼容。修改后保存项目，并使用“样本配置”模式重新分析以生成新图。
+
+```powershell
+.\run_gui.bat --check
+```
+
+GUI使用共享便携Python，新增可选依赖锁定在`python/requirements-gui.txt`；正常启动不安装或下载。需要重装时运行`.\python\python.exe -s -m pip install -r .\python\requirements-gui.txt`。详见[桌面工作台说明](gui/README.md)。
+
+EXE为便携启动器，移动或分发时复制完整项目目录，保留同级 `python/`、`gui/` 与业务模块。`run_gui.bat`作为兼容入口转交同一EXE；`run_gui.bat --check`可在终端显示启动诊断。启动器源码与重建方式见[启动器维护](gui/launcher/README.md)。
+
 ## 目录与运行
 
-- `Ra/`：将 Zygo 截图放入 `Ra/data/`，双击 `Ra/run_ra.bat`。详见 [Ra 说明](Ra/README.md)。
-- `Raman/`：将两列光谱 TXT 放入 `Raman/data/`，使用 `stack.xlsx` 配置堆叠图，双击 `Raman/run.bat`。详见 [Raman 说明](Raman/README.md)。
-- `CLSM/`：将共聚焦高度矩阵 TXT 放入 `CLSM/data/3d/`，双击 `CLSM/run_clsm.bat`。每次运行在写入结果前清空整个 `CLSM/out/`，仅保留本次输出；长期保留的结果请另存到 `out/` 外，自检不清理。采用多位置条带平均剖面测量剩余槽深和开口宽度，测量结果写入 `CLSM/out/paper_v4/`，二维高度图、三维表面图分别写入 `CLSM/out/2D/` 和 `CLSM/out/3D/`。Excel 第一页为核心结论，第二页为完整汇总，后续各页保留测量明细和敏感性对照。详见 [CLSM 说明](CLSM/README.md)。
-- `python/`：三个工具共用的便携 Python 3.12 和依赖，随仓库保留；无需修改本机 Python 或 Conda 环境。详见 [运行时说明](python/README.md)。
+各模块仅保留一个 `run.bat`，直接启动处理脚本；重复的旧启动器已合并移除。使用前先放入输入、检查配置，保存关闭 Excel 后运行。
 
-首次克隆后，按需自行创建 `Ra/data/`、`Raman/data/` 和 `CLSM/data/3d/` 并放入本地实验数据。Git 不保存空目录。CLSM 的主脚本 `extract_groove.py`、`profile_measurement.py` 与 `surface_plots.py` 需放在同一目录；只有 CMP 后形貌时，输出为剩余槽深，不能计算绝对去除量。
+| 项目 | 输入与配置 | 启动入口 | 主要输出 |
+|---|---|---|---|
+| [Ra](Ra/README.md) | BMP/图片、Zygo DAT；`ra_config.xlsx` 控制启用行 | `Ra/run.bat` | `Ra/ra_results.xlsx`、`Ra/out/` |
+| [Raman](Raman/README.md) | `Raman/data/` 两列 TXT；`stack.xlsx` 配置堆叠图 | `Raman/run.bat` | `Raman/out/` |
+| [CLSM](CLSM/README.md) | `CLSM/data/3d/` TXT/LSM；命令行参数 | `CLSM/run.bat` | `CLSM/groove_paper_results.xlsx`、`CLSM/out/` |
+| [ER](ER/README.md) | `ER/data/` 中 Excel 模板及 PDF/图片票据 | `ER/run.bat` | `ER/物品验收单_时间戳.xlsx`、`ER/out/` |
+| [sci-pic](sci-pic/README.md) | `templates/` 中的 Excel 模板；GUI 提供样式预览 | `sci-pic/run.bat` | `sci-pic/out/运行时间_编号/` |
+| [Nanoindentation Analysis](Nanoindentation%20Analysis/README.md) | `Nanoindentation Analysis/data/` 内 MTS TestWorks `.xls`；`fill_config.bat` 导入 `config.xlsx` 后由用户设置分组/图例/阈值 | `Nanoindentation Analysis/run.bat` | `Nanoindentation Analysis/out/` |
+| [python](python/README.md) | 共用便携 Python 3.12 与依赖 | 无需激活 Conda | 不自动安装、更新依赖 |
+
+`sci-pic/` 已接入 EXE 的“科研绘图”：先浏览两种模板预览，点击“填写数据”创建 Excel 副本，保存后生成并预览 PNG/PDF/SVG。模板集中在 `templates/`，样式图集中在 `previews/`。也可使用原命令行入口：填写 `sci-pic/templates/sci_pic.xlsx` 后双击 `sci-pic/run.bat`，每次在 `sci-pic/out/` 下独立归档 PNG、PDF、SVG、输入快照和数据。详见 [SCI 绘图模板](sci-pic/README.md)。新克隆可能没有空的 `data/`、`out/`，按各模块说明创建输入目录即可。
+
+## 统一检查与运行约定
+
+双击 `check.bat`，或在根目录执行 `./check.bat --no-pause`。检查包括解释器位置、依赖导入、模块入口、源码语法及批处理换行；检查不会处理数据、改写配置或清理输出。检查通过仅说明代码与运行环境基础可用，不代表测量算法或票据识别准确。
+
+- 全部入口使用项目 `python/python.exe`，禁用用户包和 Python 字节码缓存，清除继承的 `PYTHONPATH`、`PYTHONHOME`；缺少共享解释器时停止，不调用系统 Python。
+- 命令行批量运行时可先设置 `$env:DATA_ANALYSIS_NO_PAUSE='1'`，让失败直接返回退出码；成功/失败状态保留。该变量仅影响当前终端及子进程，不修改系统环境。Raman 无参数单谱模式仍需要交互输入。
+- Python/Markdown 使用 UTF-8；现有 BAT 使用 GBK + CRLF。`.editorconfig` 约定后续编辑格式，不批量重排现有科学代码。
+- 各模块 README 均按“输入 / 配置 / 运行 / 输出 / 环境检查”提供快速使用表。
+
+## 数据与方法边界
+
+原始输入默认只读；现有输出路径保留。CLSM 默认运行会在输入检查通过后清理整个本模块 `out/`；长期保存结果请放到该目录外，试算按模块说明指定独立输出。
+
+Ra 的 `fill_config.bat` 默认按当前 `data/` 清理过期配置行并备份；显式 `--dir` 时仍为追加导入。Raman 的 `fill_stack.bat` 按当前 TXT 重建配置行，运行前核对输入目录。
+
+CLSM 只测已有形貌，不能由单次扫描推导绝对去除量；paper-v5 槽宽仍有浅壁边界误差候选，论文采用前需独立核验。LSM 高度比例、符号及有效掩码未确认时不得直接发布定量结论。Ra 去噪/高通为候选处理，ER 的 OCR 品名仍需人工复核。
 
 ## 新增模块约定
 
@@ -24,7 +64,7 @@ Windows 下的实验数据处理工具，包含 Zygo 面粗糙度 Ra 提取、Ra
   out/            本地生成结果，不上传
 ```
 
-新模块的代码、配置和说明会随 `sync_github.bat` 自动纳入同步；任意层级的 `data/`、`out/` 及全部内容都排除，包括模块下的嵌套子目录。新模块的结果统一写入 `out/`；不在这些目录里的普通文件会被纳入同步，独立生成目录需另加忽略规则。现有 Ra 的旧输出位置已单独排除，保持原工具行为。
+新模块的代码、配置和说明会随 `sync_github.bat` 自动纳入同步；任意层级的 `data/`、`out/` 及全部内容都排除，包括模块下的嵌套子目录。新模块的结果统一写入 `out/`；不在这些目录里的普通文件会被纳入同步，独立生成目录需另加忽略规则。现有 Ra、CLSM、ER 的模块根目录结果按明确规则排除，保持原工具行为。
 
 Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓库中，应至少添加代码或说明。不要在模块自己的 `.gitignore` 中重新放行这些目录，也不要强制添加数据或输出文件。
 
@@ -34,6 +74,8 @@ Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓�
 
 - 任意层级的 `data/` 和 `out/`，包括其中所有文件。
 - Ra 的生成结果 `Ra/ra_results.xlsx` 和 `Ra/surface_plots/`。
+- CLSM 的 `groove_results.xlsx`、`groove_paper_results*.xlsx` 及 `.backups/`。
+- ER 根目录的生成 XLSX。
 - Python 缓存、Office 临时文件与 `.env` 等本地环境配置。
 
 `Raman/stack.xlsx` 是绘图配置表，纳入版本管理。忽略规则只影响 Git，不删除或修改本地数据。
@@ -57,3 +99,7 @@ Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓�
 ```
 
 `--no-pause` 适合终端调用；成功返回 0，失败返回 1。提交前仍应确认项目改动；不要用 `git add -f` 强制添加数据或结果。
+
+## 分发打包
+
+双击 `package.bat`，按提示逐项选择 Ra、Raman、CLSM、ER、sci-pic 和纳米压痕模块（直接回车打包，输入 `n` 跳过）；便携 Python、GUI、启动器和说明文件固定包含。在项目根目录生成 `DataAnalysis_时间_模块.zip`。任意层级的 `data/`、`out/`、`__pycache__` 及生成结果均排除，根目录的批量原始数据目录也不打包。终端调用可用 `.\package.bat --no-pause`。

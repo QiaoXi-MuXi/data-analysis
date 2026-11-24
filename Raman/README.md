@@ -1,4 +1,16 @@
-﻿# Raman 出图工具
+# Raman 出图工具
+
+## 快速使用
+
+| 项目 | 说明 |
+|---|---|
+| 输入 | `data/` 内两列光谱 TXT。 |
+| 配置 | `stack.xlsx` 控制堆叠图；无配置表时保留交互单谱模式。`fill_stack.bat` 按当前 `data/` 重建配置行，请先确认输入目录。 |
+| 运行 | 双击本目录唯一的 `run.bat`，参数原样传递。 |
+| 输出 | `out/` 下的 PNG 和单谱模式的 `peaks.csv`。 |
+| 环境检查 | 运行根目录 `check.bat`；使用共享 `../python/python.exe`，不回退系统 Python。 |
+
+命令行无人值守运行可在当前 PowerShell 设置 `$env:DATA_ANALYSIS_NO_PAUSE='1'`，使失败时直接返回退出码；该设置不取消 Raman 无参数单谱模式的输入提示。检查后可用 `Remove-Item Env:DATA_ANALYSIS_NO_PAUSE` 移除。原始输入及现有输出位置保持原有约定。
 
 双击 `run.bat` 即可出图，有两种模式，靠 `stack.xlsx` 在不在切换：
 
@@ -20,7 +32,7 @@ data analysis\
     run.bat        双击运行
     plot_raman.py  出图脚本
     stack.xlsx     堆叠对比图的配置表（Excel，不需要就改名）
-    fill_stack.bat 双击把 data 里所有 txt 补进 stack.xlsx
+    fill_stack.bat 双击按 data 里的 txt 重建 stack.xlsx
     _fill_stack.py 上者调用的脚本
     _make_stack_xlsx.py  重新生成 stack.xlsx 模板
     _check_columns.py    核对 代码/表格/README 三处列名是否一致
@@ -47,9 +59,9 @@ data analysis\
 | `图例名称` | 图上显示的名字，用 `\|` 换行（如 `样品 A\|三次平均`），留空则用文件名 |
 | `归一化(0/1)` | `1` = 每条谱缩放到自己的 0~1 范围；`0` = 保留原始强度 |
 | `标注峰位(0/1)` | `1` = 在这条谱上标峰位；`0` = 不标。留空也标 |
-| `峰高阈值` | 标峰阈值，单位 counts（按原始强度判断）；留空用默认 5 |
+| `峰高阈值` | 标峰阈值，单位 counts（按原始强度判断）；留空用默认 5。双击 `fill_stack.bat` 后本列会被自动重算为每条谱的自适应值 `max(2.5σ, 1.1%×最强峰 H)`——弱信号谱阈值低、能抓弱峰，高动态谱阈值自动抬高、压掉杂峰；想保留自己手填的值，命令行跑 `fill_stack.bat --keep-height` |
 | `纵向偏移` | 纵向偏移量，留空自动排布（一般不用填） |
-| `区间下限` / `区间上限` | 横向显示区间，留空 = 数据全范围；两列要么都填要么都空 |
+| `区间下限` / `区间上限` | 横向显示区间；可以只填一端，空的那端自动取数据边界（下限取最小值、上限取最大值）；两端都留空 = 数据全范围 |
 
 规则：
 
@@ -83,7 +95,9 @@ data analysis\
 
 **想回到单谱模式**：把 `stack.xlsx` 改名成 `stack.xlsx.bak` 即可，`run.bat` 会自动走单谱流程。
 
-**想把 data 里所有文件一次性列进表格**：双击 `fill_stack.bat`。它只**追加** data 里还没有的文件，你已经改过的行（label、normalize、peaks、height 等）原样保留。stack.xlsx 不存在时直接按 data 里的全部文件新建。
+**想让表格跟 data 里的文件对齐**：双击 `fill_stack.bat`。它按 data 里现有的 txt 重建表格：行顺序跟 data 一致，data 里已经删掉的文件对应行也会一起去掉；同名文件你改过的（label、normalize、peaks 等）原样保留。stack.xlsx 不存在时直接按 data 里的全部文件新建。
+
+**峰高阈值（height 列）会自动填**：`fill_stack.bat` 默认按每条谱重算阈值 `max(2.5σ, 1.1%×最强峰 H)`——σ 是该谱的噪声基底（差分 MAD 稳健估计），这样弱信号谱阈值低、能标出弱峰，强信号谱阈值随主峰自动抬高、压掉中等杂散峰。30 条实测谱上这套策略 3 个真峰全召回、0 杂峰。你手填的 height 值会被重算覆盖；想保留手填值，用命令行 `fill_stack.bat --keep-height`（双击 bat 不会带这个参数）。
 
 ## 默认预设（单谱模式）
 
@@ -125,13 +139,25 @@ H = I_max - I_baseline
 
 只有 `H >= HEIGHT` 的峰才会标注波数。峰位由高斯 + 线性基线拟合给出，拟合窗口 ±30 cm⁻¹。
 
+## 激光线假峰排除
+
+0 cm⁻¹ 附近有激光线（瑞利散射）的漏光，是一个又尖又窄的峰，**不是拉曼峰**。它的 H 有时会越过默认阈值 5，被误标成峰（例如 `-0.45`、`-0.77` 这类靠近零的标签）。脚本默认把激光线周围 ±50 cm⁻¹ 内的局部极大直接排除，不做拟合；这一带之外最低的真实拉曼峰在 ~142 cm⁻¹，所以不会误伤。
+
+- 排除区以**校正后的激光线位置**为中心：单谱模式跟着 `XSHIFT` 走（例如 `XSHIFT=+10` 时排除区变成 -40 ~ +60），堆叠模式以 0 为中心
+- 默认半宽 50 cm⁻¹，用命令行参数 `--zero-guard` 改；设 `--zero-guard 0` 可关闭排除（想看原始漏光峰时用）
+- 两种模式（堆叠 / 单谱）都默认生效；`run.bat` 直接运行时用默认值，命令行模式可传 `--zero-guard`
+
 ## 输出
 
 - 单谱模式：`out\<文件名>.png`，每份 txt 一张，2048×1024
 - 单谱模式：`out\peaks.csv`，峰位表，列为 文件、峰位、H、I_max、I_baseline、校正量
 - 堆叠模式：`out\stack.png`，一张对比图
 
+每次运行都会**先清空 `out` 里的旧文件**（png / csv 等普通文件，不动子目录），再生成新图。这样 data 里已经删掉的谱对应的旧图不会残留在 out 里让人误认。清空只删普通文件；个别文件被占用（比如图片还开着）删不掉时会警告并跳过，不影响本次出图。
+
 图片先写成临时文件再替换过去，所以不会出现写了一半的残图。如果某个文件被占用（比如图片还开着），会自动重试三次；仍然失败的话只跳过这一个文件，其余照常出图，并在窗口里列出失败的文件名。
+
+> 注意：因为每次会先清空，`out` 目录请专门用来放本工具的产物，不要把其它想保留的文件放在里面。
 
 ## 速度
 
@@ -146,8 +172,8 @@ H = I_max - I_baseline
 不想用 bat 的话，可以直接命令行：
 
 ```
-python plot_raman.py --xmin 200 --xmax 1200 --height 80 --shift -12
-python plot_raman.py --stack stack.xlsx
+& ..\python\python.exe -B .\plot_raman.py --xmin 200 --xmax 1200 --height 80 --shift -12
+& ..\python\python.exe -B .\plot_raman.py --stack stack.xlsx
 ```
 
 `--src` 和 `--out` 可以指定别的输入输出目录；`--stack` 后面跟表格路径，此时 `--xmin/--xmax` 可省略，写了会覆盖表格里的区间。
@@ -165,3 +191,13 @@ python plot_raman.py --stack stack.xlsx
 - 杀毒软件或网盘同步正在占用 `out` 文件夹 → 等一会儿重跑，或先把 `out` 移出同步目录
 
 脚本会自动重试三次，多数临时占用能自己恢复。
+
+## 命令行启动入口
+
+`run.bat` 不带参数时保持原来的 Excel/交互模式；带参数时直接传给绘图脚本，不弹出单谱参数提示，也不自动打开结果目录：
+
+```powershell
+.\run.bat --help
+.\run.bat --stack .\stack.xlsx
+.\run.bat --src '其他输入目录' --out '独立输出目录' --xmin 200 --xmax 1200
+```

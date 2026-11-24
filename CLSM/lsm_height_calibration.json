@@ -1,0 +1,217 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "input_name": "3.lsm",
+      "input_sha256": "5aa87217f34dff75466700f92549b9760a8ea826e5b656895023fb0a17a020c3",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-01",
+      "basis": "用户确认3、4.lsm的比例、高度单位及方向与现有out一致，并明确选择Z=(1-存储值)×100µm，槽底低于周围表面；非程序独立仪器标定"
+    },
+    {
+      "input_name": "4.lsm",
+      "input_sha256": "f84ed20807a29606a7fb666c66603967443efc68776fd48a12df2621e475d7f6",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-01",
+      "basis": "用户确认3、4.lsm的比例、高度单位及方向与现有out一致，并明确选择Z=(1-存储值)×100µm，槽底低于周围表面；非程序独立仪器标定"
+    },
+    {
+      "input_name": "1.lsm",
+      "input_sha256": "7cc68aa6bd6030ad4f4576710497749260e799b4818b0b9fc4b05618b441f1d1",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "0ec68bd37e66e7b02ca64c849ac787d6a9da3d99d476d9496b11fe74faa64e9c",
+      "channel_factors_raw": {
+        "factor": 9.999999999999999e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "2-1.lsm",
+      "input_sha256": "1722f8c696087f4621eb504ecf9693d8d1badd528a2cdc7c766dc703b1616c53",
+      "scale_um": -42.0,
+      "offset_um": 42.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "6fb55842aebcc4ff184c64ae5313845110433335837deb6ad45006b37ac19d21",
+      "channel_factors_raw": {
+        "factor": 4.2e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "2-3.lsm",
+      "input_sha256": "48f2ea2e57706a86e3530e57fd4263613f2fd09b195a62a79653d586beae7957",
+      "scale_um": -42.0,
+      "offset_um": 42.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "960539803c08ddd41cef073959fa69abbb102d0977f94b7382a03cf682ce620a",
+      "channel_factors_raw": {
+        "factor": 4.2e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "2-5.lsm",
+      "input_sha256": "004a635523171abb19da2a979b5ba3551bc413075fed2118218b47eec5732f11",
+      "scale_um": -42.0,
+      "offset_um": 42.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "b0b8925b376f8df85332b52b90719d9449955324edd971df3c05e1f82b62766a",
+      "channel_factors_raw": {
+        "factor": 4.2e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "2-7.lsm",
+      "input_sha256": "f77a3e396fd3ee2c1fb9b1bf577bd8ae260400756de7311d64e08e784fec6a44",
+      "scale_um": -42.0,
+      "offset_um": 42.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "e7514fce10ff275c44af9404ee4733b5b4f78bee3d5be823fc9ab26589b5c6b6",
+      "channel_factors_raw": {
+        "factor": 4.2e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "2.lsm",
+      "input_sha256": "edc8175b91699ba78aaee75ed3d7e5c6dd99e5834a386659a23797b940d7cefb",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "37fbcd7e23b3ab37e1bd715d2f2085f27afa6f1027e94db63856b73695c79908",
+      "channel_factors_raw": {
+        "factor": 9.999999999999999e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "3.lsm",
+      "input_sha256": "e8ba423da701dfdda725c348640e405d83b76cc27d2c1940e4612b749a3ba118",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "ba4b5e460771e40c3bdf56469b7d91f6640b7bcd8e56741785796fd5d3149726",
+      "channel_factors_raw": {
+        "factor": 9.999999999999999e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    },
+    {
+      "input_name": "4.lsm",
+      "input_sha256": "6d408ad0034b88cc8e71447e687cd6df777440e1b64e2570dbb1848d25581ff3",
+      "scale_um": -100.0,
+      "offset_um": 100.0,
+      "unit": "um",
+      "confirmation": "user-confirmed",
+      "date": "2026-11-02",
+      "basis": "用户明确确认20261031文件夹本批8份LSM按各文件自身量程Z=(1-存储值)×量程换算为µm，槽底低于周围表面；非独立仪器标定",
+      "source_directory": "E:\\study\\同步\\汇报\\周报、PPT\\研二上\\8_261104\\pic\\20261031",
+      "height_record_index": 1,
+      "height_record_sha256": "7ba887fbc0a7f87eb6499623d1369388cf14f183bcd60751c62f07ada3c832dd",
+      "channel_factors_raw": {
+        "factor": 9.999999999999999e-05,
+        "offset": 0.0,
+        "unit_code": 2,
+        "block_size": 32
+      },
+      "voxel_size_xyz_um": [
+        0.6251697265622246,
+        0.6251697265622246,
+        1.0
+      ]
+    }
+  ]
+}

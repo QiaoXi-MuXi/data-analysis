@@ -2,20 +2,20 @@
 """
 CLSM 三维形貌 -> 槽宽 / 槽深 批量测量
 
-输入: data/3d/*.txt（共聚焦导出的 ASCII 矩阵）
-  - 首行: 空单元格 + 各列 "X: <µm>" 列坐标
+输入: data/*.txt 或 *.lsm（同名优先 TXT；LSM 高度换算须显式确认）
+  - TXT 首行: 空单元格 + 各列 "X: <µm>" 列坐标
   - 其余行: 空单元格 + 该行各列的 Z(µm)，行方向即 Y 轴
-  - 文件内没有 Y 坐标，行距按 X 步距处理（见 README）
+  - TXT 内没有 Y 坐标，行距按 X 步距处理；LSM 使用文件 X/Y 标定（见 README）
 
-测量原理（逐列剖面，沿 Y 方向）:
-  主指标：固定25%/50%/75%位置取条带，先平均真实高度再测深，三位置全部通过才取算术平均。
+测量原理（先在物理XY中校正直槽方向，剖面沿法向Y跨槽）:
+  主指标：沿槽长分区随机取条带，宽深独立筛查和有界补测，保留全部候选供追溯。
   以下逐列方法保留作为深度空间分布与旧版对照：
   1. 每列取 Y 向剖面，滑动平均去噪
   2. 用槽两侧平台区（距槽心 70~165 px）做稳健二次曲面拟合，作为局部基准面
      → 扣除样品倾斜与低频起伏，得到去趋势剖面 d
   3. 槽心 = 槽心附近 ±45 px 内 d 的最小值（抛物线内插到亚像素）
-  4. 剩余槽深 = 基准面在槽心处的高度 − 槽底高度；深度有效性独立于槽宽
-     同时输出基准面/平滑敏感性、连续深区标记；没有 CMP 前测量时不推算去除量
+  4. 槽深 = 基准面在槽心处的高度 − 槽底高度；深度有效性独立于槽宽
+     同时输出基准面/平滑敏感性、连续深区标记
   5. 开口宽：噪声门限定位持续凹陷，浅壁拟合到局部基准面得到外侧边界
      保留 10% / 50% / 90% 深度宽作为辅助指标；开口定位不使用最深值设定高度
   6. 保留原始缺失掩码；仅修复局部孤立尖点，记录多槽、边界拟合及邻列跳变标记
@@ -30,7 +30,6 @@ import argparse
 import hashlib
 import json
 from collections import Counter
-import re
 import sys
 from pathlib import Path
 
@@ -38,8 +37,13 @@ import numpy as np
 
 # 项目便携Python使用隔离路径，显式加载本脚本同目录的测量模块。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profile_measurement import (analyse_profiles, jsonable, selftest as profile_selftest,
+from profile_measurement import (jsonable, selftest as profile_selftest,
                                  PROFILE_POSITIONS, STRIP_WIDTH_UM)
+from clsm_inputs import discover_inputs, read_lsm_height, add_input_arguments, lsm_options
+from groove_orientation import (orient_input, orientation_note, resample_height, plot_orientation,
+                                selftest as orientation_selftest)
+from profile_sampling import (analyse_profiles, selftest as sampling_selftest,
+                              DEFAULT_COUNT, DEFAULT_SEED, DEFAULT_ATTEMPTS)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(errors="replace")   # 控制台码页不含 µ 等字符时不崩溃
@@ -53,16 +57,17 @@ LEVELS = (0.1, 0.5, 0.9)    # 取宽度的深度水平
 MIN_DEPTH_UM = 0.10   # 判定为有效槽的最小深度
 MIN_SNR = 5.0         # 有效槽的最小深度/平台噪声比
 ZERO_AS_MISSING = True  # 沿用旧版零值缺失假设；另输出零值为真实高度的敏感性
-ALGORITHM_VERSION = "paper-v4"
+ALGORITHM_VERSION = "paper-v5-local"
 OPEN_DROP_UM = 0.05   # 凹陷检测下限；仅用于定位外壁，不是测宽高度
 OPEN_NOISE_K = 3.0    # 凹陷至少低于平台噪声的三倍
 OPEN_RUN = 5          # 凹陷至少持续五个 Y 像素
 OPEN_GAP = 3          # 仅连接最多三个像素的短间隙
 MAX_WALL_UNCERTAINTY_PX = 8.0
+OPEN_CENTER_MARGIN_PX = 3.0  # 允许参考槽心与槽口区间之间的小幅偏移；拒绝邻近凹陷冒充。
 
 
 # ---------------------------------------------------------------- 读入
-def read_3d(path: Path, return_mask=False):
+def _read_txt_3d(path: Path, return_mask=False):
     """读取矩阵；兼容原三元返回值，按需附带插值前的缺失掩码。"""
     raw = path.read_bytes().replace(b"\x00", b"").splitlines()
     head = raw[0].split(b"\t")[1:]
@@ -79,8 +84,8 @@ def read_3d(path: Path, return_mask=False):
         if len(values) != x.size:
             raise ValueError(f"第 {line_no} 行列数错误，停止以避免 Y 坐标错位")
         rows.append([float(v) for v in values])
-    if len(rows) < 2 * REF_OUT + 2 * BORDER:
-        raise ValueError("数据行不足以支持当前两侧平台区")
+    if len(rows) < 2:
+        raise ValueError("高度矩阵至少需要两行")
     Z = np.asarray(rows, float)
     missing = ~np.isfinite(Z) | ((Z == 0) if ZERO_AS_MISSING else False)
     Z[missing] = np.nan
@@ -91,6 +96,27 @@ def read_3d(path: Path, return_mask=False):
             Z[bad, j] = np.interp(np.flatnonzero(bad), good, Z[good, j])
     dy = float(np.median(np.diff(x)))
     return (x, Z, dy, missing) if return_mask else (x, Z, dy)
+
+
+def read_3d(path: Path, return_mask=False, return_source=False, **height_options):
+    """两种格式统一返回物理坐标/高度；保留旧三元及四元接口。"""
+    path = Path(path)
+    if path.suffix.casefold() == ".txt":
+        x, z, dy, missing = _read_txt_3d(path, return_mask=True)
+        source = dict(format="txt", height_status="TXT导出高度（沿用原流程）",
+                      height_basis="TXT中的Z按µm读取；未由LSM回归或重标定",
+                      dy_source="按TXT的X中位步距假定", missing_policy="沿用TXT零值缺失假设")
+    elif path.suffix.casefold() == ".lsm":
+        x, z, dy, missing, source = read_lsm_height(path, **height_options)
+        for j in range(z.shape[1]):
+            bad, good = missing[:, j], np.flatnonzero(~missing[:, j])
+            if bad.any() and good.size:
+                z[bad, j] = np.interp(np.flatnonzero(bad), good, z[good, j])
+    else:
+        raise ValueError("仅支持TXT或LSM输入")
+    if return_source:
+        return x, z, dy, missing, source
+    return (x, z, dy, missing) if return_mask else (x, z, dy)
 
 
 def smooth_edge(a: np.ndarray, w: int) -> np.ndarray:
@@ -215,32 +241,128 @@ def measure_opening(d, y0, noise):
     valid = BORDER < left['pos'] < lo < hi - 1 < right['pos'] < d.size - 1 - BORDER
     plateau_overlap = (y0 - left['pos'] >= REF_IN - 4
                        or right['pos'] - y0 >= REF_IN - 4)
+    # 参考槽心来自整图中位剖面；不允许在目标槽变浅/断续时把旁边小凹陷当成槽口。
+    center_mismatch = not (left['pos']-OPEN_CENTER_MARGIN_PX <= y0 <= right['pos']+OPEN_CENTER_MARGIN_PX)
     if (left['uncertainty_px'] > MAX_WALL_UNCERTAINTY_PX
             or right['uncertainty_px'] > MAX_WALL_UNCERTAINTY_PX):
         valid = False
-    reason = ("多槽分裂候选" if split else "槽口接近平台拟合区" if plateau_overlap
+    reason = ("多槽分裂候选" if split else "槽口未包围参考槽心（邻近凹陷干扰）" if center_mismatch
+              else "槽口接近平台拟合区" if plateau_overlap
               else "" if valid else "开口边界不确定")
-    return dict(valid=bool(valid and not split and not plateau_overlap), reason=reason,
-                left=left, right=right, cutoff=cutoff, split=split)
+    return dict(valid=bool(valid and not split and not plateau_overlap and not center_mismatch), reason=reason,
+                left=left, right=right, cutoff=cutoff, split=split, center_mismatch=center_mismatch)
 
 def _fit_opening_wall(d, boundary, direction, noise):
     fit, reason = _fit_shallow_wall(d, boundary, direction, noise)
-    if fit is not None:
+    if fit is not None and direction*(fit["pos"]-boundary) < 0:
         fit["method"] = "浅壁线性外推"
         return fit, reason
+    if fit is not None:
+        fit, reason = None, "槽壁交点位于检测边界内侧"
+    crossing, _ = _fit_crossing_wall(d, boundary, direction, noise)
+    if crossing is not None and direction*(crossing["pos"]-boundary) < 0:
+        crossing["method"] = "跨基准面局部槽壁拟合"
+        return crossing, ""
     # 陡壁的浅高度带像素不足时才改用平台-槽壁连续折线，保留拟合方法。
     if reason == "槽壁支撑点不足":
         fit, reason = _fit_steep_wall(d, boundary, direction, noise)
         if fit is not None:
             fit["method"] = "陡壁连续折线"
+            if direction*(fit["pos"]-boundary) >= 0:
+                fit, reason = None, "槽壁交点位于检测边界内侧"
+    if fit is None:
+        fit, _ = _locate_supported_transition(d, boundary, direction, noise)
+        if fit is not None:
+            fit["method"] = "平台支撑的槽缘过渡括区"
+            return fit, ""
     return fit, reason
+
+
+def _locate_supported_transition(d, boundary, direction, noise):
+    """平坦平台紧接弯曲陡壁时，以有界过渡区定位；不向深槽壁外推直线。"""
+    tolerance = max(3 * noise, .02)
+    offsets = np.arange(-12, 7)
+    idx = boundary + direction * offsets
+    if np.any(idx < BORDER) or np.any(idx >= d.size-BORDER):
+        return None, "过渡区超出扫描范围"
+    values = d[idx]
+    if not np.all(np.isfinite(values)):
+        return None, "过渡区存在非有限高度"
+    # 必须具有连续五点、接近远场零基准的真实平台，不能把凸起或斜壁当平台。
+    for k in range(len(idx)-4, 3, -1):
+        platform = values[k-4:k+1]
+        if np.any(abs(platform) > tolerance) or np.ptp(platform) > tolerance:
+            continue
+        departures = np.flatnonzero(values[k+1:] < -tolerance)
+        if not departures.size:
+            continue
+        j = k+1+int(departures[0])
+        if not -3 <= offsets[j] <= 2 or j-k > 3 or j+2 >= len(idx):
+            continue
+        wall = values[j:j+3]
+        # 至少三点连续下降且达到显著凹陷；拒绝孤立尖点、槽内起伏和缓慢漂移。
+        if np.any(np.diff(wall) >= -max(noise/3, .002)):
+            continue
+        if wall[-1] > -max(5*noise, .10):
+            continue
+        if np.any(np.diff(values[k:j+3]) > max(noise, .01)):
+            continue
+        slope = (wall[-1]-values[k])/(j+2-k)
+        half_interval = (j-k)/2
+        # 加一像素作为阈值带/离散采样的分辨尺度，不宣称是统计置信区间。
+        uncertainty = half_interval + 1 + max(noise, .01)/abs(slope)
+        if uncertainty > 2:
+            continue
+        center = float((idx[k]+idx[j])/2)
+        bracket = sorted((int(idx[k]), int(idx[j])))
+        return dict(pos=center, uncertainty_px=float(uncertainty),
+                    slope=float(direction*slope), points=idx[k-4:j+3].tolist(),
+                    rmse=None, transition_bracket_px=bracket,
+                    localization_interval_px=[center-uncertainty, center+uncertainty],
+                    baseline_tolerance_um=float(tolerance)), ""
+    return None, "缺少平坦平台与连续下降槽壁的有界过渡"
+
+
+def _fit_crossing_wall(d, boundary, direction, noise):
+    """凸起槽缘穿过远场基准时，直接用跨零壁段定位，避免假定局部平台为零。"""
+    offsets = np.arange(-16, 5)
+    idx = boundary + direction * offsets
+    inside = (idx >= BORDER) & (idx < d.size-BORDER)
+    offsets, idx = offsets[inside], idx[inside]
+    values = d[idx]
+    crossings = np.flatnonzero((values[:-1] >= 0) & (values[1:] < 0))
+    for k in crossings[::-1]:
+        if offsets[k] > 0 or k < 1 or k+2 >= len(idx):
+            continue
+        points = idx[k-1:k+3]
+        xx = direction * (points-boundary)
+        yy = d[points]
+        # 两侧各有真实高度支撑，且壁段持续向槽内下降。
+        if not (yy[0] > max(noise, .02) and yy[-1] < -max(noise, .02)):
+            continue
+        if np.any(np.diff(yy) > max(noise, .02)):
+            continue
+        slope, intercept = np.polyfit(xx, yy, 1)
+        if slope >= -max(noise/6, .002):
+            continue
+        root = -intercept/slope
+        rmse = float(np.sqrt(np.mean((yy-(slope*xx+intercept))**2)))
+        if not offsets[k]-.5 <= root <= offsets[k+1]+.5 or rmse > max(2*noise, .08):
+            continue
+        return dict(pos=float(boundary+direction*root),
+                    uncertainty_px=float(max(noise, rmse, .01)/abs(slope)),
+                    slope=float(direction*slope), points=points.tolist(), rmse=rmse), ""
+    return None, "未找到可靠跨基准槽壁"
 
 
 def clean_isolated_pixels(Z, missing):
     """只替换局部孤立尖点；连续深坑保留，修复掩码供明细追溯。"""
     blocks = np.lib.stride_tricks.sliding_window_view(np.pad(Z, 1, mode="reflect"), (3, 3))
-    median = np.nanmedian(blocks, axis=(-2, -1))
-    mad = 1.4826 * np.nanmedian(abs(blocks - median[..., None, None]), axis=(-2, -1))
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='All-NaN slice encountered', category=RuntimeWarning)
+        median = np.nanmedian(blocks, axis=(-2, -1))
+        mad = 1.4826 * np.nanmedian(abs(blocks - median[..., None, None]), axis=(-2, -1))
     candidates = np.isfinite(Z) & ~missing & (abs(Z - median) > np.maximum(6 * mad, 0.10))
     counts = np.lib.stride_tricks.sliding_window_view(np.pad(candidates, 1), (3, 3)).sum(axis=(-2, -1))
     deviation = Z - median
@@ -327,14 +449,17 @@ def measure_column(p: np.ndarray, dy: float, y0: int):
 
 # ---------------------------------------------------------------- 单文件
 def analyse_file(path: Path, cols_step: int = 1, dy_override=None,
-                 strip_width_um=STRIP_WIDTH_UM, profile_positions=PROFILE_POSITIONS):
+                 strip_width_um=STRIP_WIDTH_UM, profile_positions=None,
+                 profile_count=DEFAULT_COUNT, random_seed=DEFAULT_SEED, max_attempts=DEFAULT_ATTEMPTS,
+                 input_data=None, groove_axis="auto", **height_options):
     if cols_step < 1:
         raise ValueError("列采样步长必须大于零")
-    x, Z, dy, missing = read_3d(path, return_mask=True)
-    if dy_override is not None:
-        if not np.isfinite(dy_override) or dy_override <= 0:
-            raise ValueError("Y 步距必须为有限正数")
-        dy = float(dy_override)
+    x, Z, dy, missing, source = input_data if input_data is not None else read_3d(path, return_source=True, **height_options)
+    raw_surface=dict(x=x,Z=Z,dy=dy if dy_override is None else float(dy_override),missing=missing)
+    x, Z, dy, missing, source = orient_input(x, Z, dy, missing, source, groove_axis, dy_override,
+                                           measurement=(robust_poly,measure_opening))
+    if Z.shape[0] < 2 * REF_OUT + 2 * BORDER:
+        raise ValueError("横槽方向数据不足以支持当前两侧平台区（需要至少346像素）；请增大横槽扫描范围")
     Zclean, repaired = clean_isolated_pixels(Z, missing)
     Zs = np.apply_along_axis(smooth_edge, 0, Zclean, SMOOTH_Y)
     finite_cols = np.all(np.isfinite(Zs), axis=0)
@@ -412,8 +537,8 @@ def analyse_file(path: Path, cols_step: int = 1, dy_override=None,
     values = np.array([r["w_open"] for r in opening_valid])
     q25, q75 = np.percentile(values, [25, 75]) if values.size else (float("nan"),) * 2
     reason_counts = Counter((r["opening"]["reason"] or "拟合及缺失检查通过") if r else "无有限剖面或平台不足" for r in res)
-    result = dict(path=path, x=x, Z=Z, Zclean=Zclean, Zs=Zs, dy=dy, y0=y0,
-                dy_assumed=dy_override is None, missing=missing, repaired=repaired,
+    result = dict(path=path, x=x, Z=Z, Zclean=Zclean, Zs=Zs, dy=dy, y0=y0,raw_surface=raw_surface,
+                dy_assumed=source["orientation"]["original_y_assumed"] and (source["orientation"]["rectified"] or not source["orientation"]["transposed"]), source=source, missing=missing, repaired=repaired,
                 cols=np.array(cols), res=res, valid=valid, opening_valid=opening_valid,
                 n_all=len(res), n_valid=len(valid), n_open=len(opening_valid),
                 n_open_before=len(opening_before), w_open=stat("w_open", opening_valid),
@@ -422,7 +547,19 @@ def analyse_file(path: Path, cols_step: int = 1, dy_override=None,
                 w_half=stat("w_half", valid), w_bottom=stat("w_bottom", valid),
                 yc=stat("yc_um", valid), med_profile=med, opening_reasons=dict(reason_counts))
     analyse_depth_quality(result)
-    result["paper"] = analyse_profiles(result, robust_poly, measure_opening, strip_width_um, profile_positions)
+    result["paper"] = analyse_profiles(result, robust_poly, measure_opening, strip_width_um, profile_positions,
+                                       profile_count, random_seed, max_attempts)
+    direction_flag=source['orientation']['evidence'].get('direction_review_flag','')
+    if direction_flag:
+        for metric in ('depth','width'):
+            result['paper']['summary'][metric+'_status']+='；方向待复核'
+            if result['paper']['summary'][metric+'_mean_um'] is not None:
+                result['paper']['summary'][metric+'_confidence']='待复核（方向估计或局部策略）'
+        for strip in result['paper']['strips']:
+            strip['flags'].append(direction_flag)
+            for metric in ('depth','width'):
+                if strip[metric+'_selected']:
+                    strip[metric+'_confidence']=result['paper']['summary'][metric+'_confidence']
     return result
 
 
@@ -431,11 +568,15 @@ def close_lock_warning(xlsx: Path):
     print("       请关闭该工作簿后重跑；本次结果未保存（下方屏幕结果不受影响）。")
 
 
-def write_excel(results, xlsx: Path):
+def write_excel(results, xlsx: Path, skipped=()):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
+    if not results:
+        raise ValueError("没有成功结果，不能生成汇总")
+    if len(results) > 16382:
+        raise ValueError("文件数量超过横向汇总的Excel列数上限16382")
     NUM = "0.000"
     thin = Side(style="thin", color="000000")
     BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -455,22 +596,24 @@ def write_excel(results, xlsx: Path):
 
     names = [r["path"].stem for r in results]
     rows = [
-        ("三位置平均剖面槽深 均值（µm，主指标）", [r["paper"]["summary"]["depth_mean_um"] for r in results], NUM),
-        ("三位置槽深 空间标准差（µm）", [r["paper"]["summary"]["depth_position_sd_um"] for r in results], NUM),
-        (f"{results[0]['paper']['parameters']['positions'][0]:.0%}位置条带平均剖面槽深（µm）", [r["paper"]["strips"][0]["depth_um"] for r in results], NUM),
-        (f"{results[0]['paper']['parameters']['positions'][1]:.0%}位置条带平均剖面槽深（µm）", [r["paper"]["strips"][1]["depth_um"] for r in results], NUM),
-        (f"{results[0]['paper']['parameters']['positions'][2]:.0%}位置条带平均剖面槽深（µm）", [r["paper"]["strips"][2]["depth_um"] for r in results], NUM),
-        ("平均剖面深度有效 / 计划位置数", [f"{r['paper']['summary']['n_depth']} / 3" for r in results], None),
-        ("三位置平均剖面 开口均值（µm）", [r["paper"]["summary"]["width_mean_um"] for r in results], NUM),
-        ("平均剖面开口有效 / 计划位置数", [f"{r['paper']['summary']['n_width']} / 3" for r in results], None),
-        ("三位置凹陷截面积 均值（µm²）", [r["paper"]["summary"]["area_mean_um2"] for r in results], NUM),
+        ("分区取样平均剖面槽深 均值（µm，主指标）", [r["paper"]["summary"]["depth_mean_um"] for r in results], NUM),
+        ("入选槽深 空间标准差（µm）", [r["paper"]["summary"]["depth_position_sd_um"] for r in results], NUM),
+        ("槽深筛查前首个有效位置均值（µm）", [r["paper"]["summary"]["depth_unfiltered_mean_um"] for r in results], NUM),
+        ("槽深使用备用候选的分区数", [r["paper"]["summary"]["depth_replacements"] for r in results], None),
+        ("槽深孤立偏差候选分区数", [r["paper"]["summary"]["depth_outlier_groups"] for r in results], None),
+        ("平均剖面深度入选 / 计划分区数", [f"{r['paper']['summary']['n_depth']} / {r['paper']['summary']['n_planned']}" for r in results], None),
+        ("分区取样平均剖面 开口均值（µm）", [r["paper"]["summary"]["width_mean_um"] for r in results], NUM),
+        ("入选开口 空间标准差（µm）", [r["paper"]["summary"]["width_position_sd_um"] for r in results], NUM),
+        ("槽宽筛查前首个有效位置均值（µm）", [r["paper"]["summary"]["width_unfiltered_mean_um"] for r in results], NUM),
+        ("平均剖面开口入选 / 计划分区数", [f"{r['paper']['summary']['n_width']} / {r['paper']['summary']['n_planned']}" for r in results], None),
+        ("宽深同剖面入选凹陷截面积 均值（µm²）", [r["paper"]["summary"]["area_mean_um2"] for r in results], NUM),
         ("等效截面平均深度A/W 均值（µm，辅助）", [r["paper"]["summary"]["equivalent_depth_mean_um"] for r in results], NUM),
         ("中央80%平均剖面槽深（µm，辅助候选）", [r["paper"]["central_80pct"]["depth_um"] for r in results], NUM),
         ("中央80%深度有效", ["是" if r["paper"]["central_80pct"]["valid"] else "否" for r in results], None),
         ("v3逐剖面最大槽深 空间中位数（µm）", [r["depth"][0] for r in results], NUM),
-        ("剩余槽深 P25（µm）", [r["q_depth"][0] for r in results], NUM),
-        ("剩余槽深 P75（µm）", [r["q_depth"][1] for r in results], NUM),
-        ("剩余槽深 空间标准差（µm）", [r["depth"][2] for r in results], NUM),
+        ("槽深 P25（µm）", [r["q_depth"][0] for r in results], NUM),
+        ("槽深 P75（µm）", [r["q_depth"][1] for r in results], NUM),
+        ("槽深 空间标准差（µm）", [r["depth"][2] for r in results], NUM),
         ("深度有效 / 总列数", [f"{r['n_depth']} / {r['n_all']}" for r in results], None),
         ("全部候选深度 中位数（µm，含无效）", [r["depth_all"] for r in results], NUM),
         ("旧版宽深共同筛查 中位数（µm）", [r["depth_legacy"][0] for r in results], NUM),
@@ -496,6 +639,16 @@ def write_excel(results, xlsx: Path):
         ("槽中心 Y（µm）", [r["yc"][0] for r in results], NUM),
         ("有效剖面数 / 总列数", [f"{r['n_valid']} / {r['n_all']}" for r in results], None),
     ]
+    rows.extend([
+        ("槽宽使用备用候选的分区数", [r['paper']['summary']['width_replacements'] for r in results], None),
+        ("槽宽孤立偏差候选分区数", [r['paper']['summary']['width_outlier_groups'] for r in results], None),
+        ("固定25/50/75%对照槽深（µm，当前槽壁算法）", [r['paper']['fixed_reference']['summary']['depth_mean_um'] for r in results], NUM),
+        ("固定25/50/75%对照槽宽（µm，当前槽壁算法）", [r['paper']['fixed_reference']['summary']['width_mean_um'] for r in results], NUM),
+        ("槽深汇总状态", [r['paper']['summary']['depth_status'] for r in results], None),
+        ("槽宽汇总状态", [r['paper']['summary']['width_status'] for r in results], None),
+        ("局部有效槽深参考（µm，非整槽主均值）", [r['paper']['summary']['depth_partial_mean_um'] if r['paper']['summary']['depth_mean_um'] is None else None for r in results], NUM),
+        ("局部有效槽宽参考（µm，非整槽主均值）", [r['paper']['summary']['width_partial_mean_um'] if r['paper']['summary']['width_mean_um'] is None else None for r in results], NUM),
+    ])
 
     ws.cell(row=1, column=1, value="测量项")
     for j, name in enumerate(names, start=2):
@@ -532,18 +685,17 @@ def write_excel(results, xlsx: Path):
     ws.freeze_panes = "B2"
 
     notes = [
-        "主指标：固定图幅X的25%/50%/75%位置，12.6µm条带先平均真实高度，再做两侧二次基准70–165px和3px轻度平滑，测平均剖面槽深。",
-        "实际参数以平均剖面明细和运行记录为准。三个深度位置全部有效才计算主均值；不把低于检出限的位置静默删除后取均值。",
+        "主指标：中央80%图幅沿X分区随机取样，默认9区，每区预设最多4个候选；固定种子可复现，宽深各区独立选首个通过者。",
+        "实际参数见明细和运行记录；至少2/3分区有效且覆盖沿槽前中后三段才汇总。无效/低于检出限仍保留，不代表零。",
         "多位置测量与平均剖面分别参考Materials 2023,16,4761和Scientific Reports DOI:10.1038/s41598-024-81233-0；条带宽、滤波和阈值为本项目参数。",
         "等效截面平均深度A/W是凹陷面积除以开口宽，包含槽壁贡献；不是槽底平台平均高度，也不是完整三维槽体积测量。",
         "旧版对照：逐列9像素平滑、两侧70–165px稳健二次基准面、±45px内最小值与三点抛物线修正；最终取有效列中位数。",
         "深度独立检查检出限、搜索边界、槽底平滑支撑及平台缺失；不要求10%/50%/90%宽度交点齐全。3MAD整体候选只标记。",
         "敏感性比较固定使用同一批深度有效列；换平台模型/区间时重算基准，换平滑窗/零值解释时固定主基准，不是额外实验测量。",
-        "当前仅有CMP后形貌，CMP前槽深未保存：不能计算绝对去除量。前后对照表的初始深度留空，不用回归或单调约束填补。",
-        "主指标：持续凹陷定位外壁，浅壁拟合到局部平台基准面，左右边界间距为估计开口宽；陡壁支撑不足时用连续折线。",
+        "槽宽主指标：持续凹陷定位外壁；浅壁外推，或凸起槽缘跨基准面壁段拟合，或陡壁连续折线；保留原有噪声和拟合质量门限。",
         "开口定位门限=max(0.05 µm, 3×平台噪声)，仅用于定位，不作为测宽高度；不以槽深或编号单调性设定开口。",
         "P25/P75 和标准差反映同一形貌图内沿 X 的空间差异，不是独立重复实验的置信区间。",
-        "开口列与深度列分别判断有效性；深度整体离群候选保留。空白表示不可可靠测量，不代表零。",
+        "主取样宽深分别筛查：偏差阈值=max(3.5×1.4826MAD,20%中位数,深度0.15µm/宽度2像素)；相邻偏离分区保留并标记。",
         "Y 步距默认按 X 步距假定，可用 --dy 指定真实值；修复尖点、缺失、多槽分裂和拟合失败在逐列明细中记录。",
         "筛查前仅包含边界拟合及缺失检查通过的列；筛查后另排除孤立单列边界突跳候选。",
     ]
@@ -556,49 +708,78 @@ def write_excel(results, xlsx: Path):
     core.sheet_view.zoomScale = 100
     core.sheet_properties.pageSetUpPr.fitToPage = True
     core.sheet_properties.tabColor = "305B80"
-    core.merge_cells("A1:D1")
-    core["A1"] = "CMP后参考槽核心结果"
+    core.merge_cells("A1:K1")
+    core["A1"] = "参考槽槽深与槽宽核心结果"
     core["A1"].font = Font(name="微软雅黑", size=15, bold=True, color="243746")
     core["A1"].alignment = LEFT
+    core['A2']='局部参考与异常说明（点击查看“质量与局部参考”页）'
+    core['A2'].hyperlink="#'质量与局部参考'!A1"
+    core['A2'].font=Font(name='微软雅黑',size=10,color='0563C1',underline='single')
     core.row_dimensions[1].height = 32
-    headers = ["样品", "剩余槽深均值\n（µm）", "槽深位置间SD\n（µm）", "开口宽度均值\n（µm）"]
+    headers = ["样品", "槽深均值\n（µm）", "槽深位置间SD\n（µm）",
+               "槽宽均值\n（µm）", "槽宽位置间SD\n（µm）",
+               "槽深筛查前\n（µm）", "槽宽筛查前\n（µm）", "槽深入选/计划", "槽宽入选/计划", "槽深状态", "槽宽状态"]
     for col, label in enumerate(headers, start=1):
         cell = core.cell(3, col, label)
         cell.font = Font(name="微软雅黑", size=11, bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="305B80")
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    core.row_dimensions[3].height = 40
+    core.row_dimensions[3].height = 44
     # 结果引用第二页；空白必须保持空白，不能由直接引用变成0。
     for row, (name, source_col) in enumerate(zip(names, range(2, len(names)+2)), start=4):
         core.cell(row, 1, name)
-        for col, source_row in ((2, 2), (3, 3), (4, 8)):
+        for col, source_row in ((2, 2), (3, 3), (4, 8), (5, 9), (6, 4), (7, 10)):
             ref = f"'槽宽槽深汇总'!{get_column_letter(source_col)}{source_row}"
             core.cell(row, col, f'=IF(ISNUMBER({ref}),{ref},"")').number_format = NUM
+        summary = results[row-4]['paper']['summary']
+        core.cell(row, 8, f"{summary['n_depth']} / {summary['n_planned']}")
+        core.cell(row, 9, f"{summary['n_width']} / {summary['n_planned']}")
+        core.cell(row, 10, summary['depth_status'])
+        core.cell(row, 11, summary['width_status'])
+        if results[row-4].get("source", {}).get("format") == "lsm":
+            for status_col in (10, 11):
+                core.cell(row, status_col, core.cell(row, status_col).value+"；"+results[row-4]["source"]["height_status"])
         for cell in core[row]:
-            cell.font = Font(name="微软雅黑", size=11, bold=cell.column == 2)
-            cell.alignment = Alignment(horizontal="left" if cell.column == 1 else "right", vertical="center")
+            cell.font = Font(name="微软雅黑", size=11, bold=cell.column in (2, 4))
+            cell.alignment = Alignment(horizontal="left" if cell.column == 1 else "right", vertical="center",
+                                       wrap_text=cell.column in (10, 11))
             cell.border = Border(bottom=Side(style="hair", color="D9E2EA"))
-        core.row_dimensions[row].height = 26
-    incomplete = [r["path"].stem for r in results if r["paper"]["summary"]["n_width"] < 3]
+        core.row_dimensions[row].height = 68 if results[row-4].get("source", {}).get("format") == "lsm" or results[row-4]['source']['orientation'].get('mapping_kind')=='local_normals' else 26
+        for col,metric in ((2,'depth'),(4,'width')):
+            if '待复核' in summary[metric+'_status'] or summary[metric+'_mean_um'] is None:
+                core.cell(row,col).fill=PatternFill('solid',fgColor='FFF2CC')
+                core.cell(row,10 if metric=='depth' else 11).fill=PatternFill('solid',fgColor='FFF2CC')
+    miss_depth = [r["path"].stem for r in results if r["paper"]["summary"]["depth_mean_um"] is None]
+    miss_width = [r["path"].stem for r in results if r["paper"]["summary"]["width_mean_um"] is None]
+    lsm_names = [r["path"].name for r in results if r.get("source", {}).get("format") == "lsm"]
+    if lsm_names:
+        core["A1"] = "参考槽结果（含LSM，标定状态见本页说明）"
     core_notes = [
-        "均值按三个固定位置计算；SD表示同幅形貌的位置间差异。",
-        ("开口未满足三处有效条件，均值留空：" + "、".join(incomplete)) if incomplete else "三个固定位置均有效时报告开口均值。",
-        "缺少CMP前槽深，无法计算绝对去除量；详细汇总见第二页。",
+        '黄色结果或状态为待复核/覆盖不足；主均值留空时，局部有效区数值见“质量与局部参考”，不得当作零或完整计划范围结论。',
+        "沿槽长分区随机取样，默认9区；区内有界补测，宽深独立入选。SD是同一扫描的位置差异，不是独立实验误差。",
+        ("槽深有效性不足，均值留空：" + "、".join(miss_depth)) if miss_depth else "槽深均达到最少有效分区数和沿槽覆盖要求。",
+        ("槽宽有效性不足，均值留空：" + "、".join(miss_width)) if miss_width else "槽宽均达到最少有效分区数和沿槽覆盖要求。",
+        "筛查前列保留每区首个质量有效候选的均值；所有候选、偏差筛查、入选状态和补测坐标见“平均剖面明细”。",
     ]
+    if lsm_names:
+        core_notes.append("LSM高度换算未由本程序独立核验：" + "、".join(lsm_names) + "；详见取样参数与输入，试算不得直接作为正式测量。")
     last_note = len(names) + 5
     for row, text in enumerate(core_notes, start=last_note):
-        core.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        core.merge_cells(start_row=row, start_column=1, end_row=row, end_column=11)
         cell = core.cell(row, 1, text)
         cell.font = Font(name="微软雅黑", size=10, color="595959")
         cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         core.row_dimensions[row].height = 27
-    for col, width in zip("ABCD", (18, 26, 25, 26)):
+    for col, width in zip("ABCDEFGHIJK", (14, 17, 18, 17, 18, 18, 18, 18, 18, 28, 28)):
         core.column_dimensions[col].width = width
-    core.print_area = f"A1:D{last_note+2}"
+    core.freeze_panes = "B4"
+    core.auto_filter.ref = f"A3:K{len(names)+3}"
+    core.print_title_rows = "1:3"
+    core.print_area = f"A1:K{last_note+len(core_notes)-1}"
     core.page_setup.orientation = "landscape"
     core.page_setup.paperSize = core.PAPERSIZE_A4
     core.page_setup.fitToWidth = 1
-    core.page_setup.fitToHeight = 1
+    core.page_setup.fitToHeight = 0
     wb.active = 0
 
     # ---- 明细表: 每条剖面一行，便于溯源 ----
@@ -663,46 +844,47 @@ def write_excel(results, xlsx: Path):
     ds.auto_filter.ref = ds.dimensions
     ds.freeze_panes = "A2"
 
-    cs = wb.create_sheet("CMP前后对照")
-    cs.append(["样品（功率按1–6递增）", "CMP前槽深（µm，实测输入）", "CMP后槽深（µm）",
-               "槽深变化 前减后（µm）", "数据状态"])
-    for i, r in enumerate(results, 2):
-        cs.append([r["path"].stem, None, r["paper"]["summary"]["depth_mean_um"],
-                   f'=IF(AND(ISNUMBER(B{i}),ISNUMBER(C{i})),B{i}-C{i},"")', "CMP前未保存；无法计算差值"])
-        cs.cell(i, 2).fill = PatternFill("solid", fgColor="FFF2CC")
-        cs.cell(i, 5, f'=IF(ISNUMBER(B{i}),"已输入初始深度，请核对配对条件","CMP前未保存；无法计算差值")')
-    cs.append(["只有参考槽底高度不变且前后测量可比时，前减后才可解释为表面去除厚度；否则是表面与槽底去除量之差。"])
-    cs.append(["初始宽度相同不等于初始深度相同；不从编号趋势反推缺失的初始深度。"])
-    cs.freeze_panes = "B2"
-    for c, w in zip("ABCDE", (28, 30, 24, 30, 46)):
-        cs.column_dimensions[c].width = w
-    for row in cs.iter_rows(min_row=1, max_row=len(results)+1):
-        for cell in row:
-            cell.border = BORDER
-            cell.alignment = CENTER
-            if cell.row == 1:
-                cell.fill, cell.font = HEAD_FILL, HEAD_FONT
-            elif cell.column in (2, 3, 4):
-                cell.number_format = NUM
-
     ps = wb.create_sheet("平均剖面明细")
     ps.append(["文件", "位置比例", "中心列0起", "X（µm）", "首列0起", "末列0起", "条带列数", "条带跨度（µm）",
                "槽深（µm）", "深度有效", "深度原因", "开口（µm）", "开口有效", "开口原因",
-               "平台噪声（µm）", "截面积（µm²）", "等效深度A/W（µm）", "槽底Y（px）", "中心漂移（µm）", "标记"])
+               "平台噪声（µm）", "截面积（µm²）", "等效深度A/W（µm）", "槽底Y（px）", "中心漂移（µm）", "标记",
+               "分区1起", "区内候选序号", "深度入选", "宽度入选", "深度偏差超限", "宽度偏差超限", "深度排除", "宽度排除"])
     pd = wb.create_sheet("平均剖面数据")
-    pd.append(["文件", "位置比例", "Y（px）", "Y（µm）", "真实支撑列数", "支撑达80%", "平均高度（µm）",
+    pd.append(["文件", "位置比例", "Y（px）", "Y（µm）", "有效支撑列数（校正时为重采样列）", "支撑达80%", "平均高度（µm）",
                "基准高度（µm）", "去基准高度（µm）", "3px平滑去基准高度（µm）", "平台支撑点"])
     se = wb.create_sheet("平均剖面敏感性")
-    se.append(["文件", "比较条件", "深度均值（µm）", "有效位置数", "位置1候选（µm）", "位置2候选（µm）", "位置3候选（µm）", "说明"])
+    max_positions = max(r['paper']['summary']['n_planned'] for r in results)
+    se.append(["文件", "比较条件", "深度均值（µm）", "有效位置数",
+               *[f"分区{i+1}候选（µm）" for i in range(max_positions)], "说明"])
+    settings = wb.create_sheet("取样参数与输入")
+    settings.append(["文件", "取样模式", "计划分区", "随机种子", "每区最多候选", "实际候选数", "槽深偏差阈值（µm）", "槽宽偏差阈值（µm）", "输入状态", "输入格式", "高度标定状态", "分析Y步距来源", "分析Y步距（µm）", "高度换算及缺失规则", "槽方向及坐标映射", "方向选项", "原始Y步距来源", "分析X步距来源", "槽线相对原始X角度（度）", "方向重采样", "分析像素至原始行列映射", "方向复核标记"])
+    for name, reason in skipped:
+        settings.append([name, None, None, None, None, None, None, None, "跳过："+reason])
     for result in results:
         paper=result["paper"]
+        params, summary = paper['parameters'], paper['summary']
+        settings.append([result['path'].name,params['sampling'],summary['n_planned'],params['random_seed'],
+                         params['max_attempts'],summary['n_attempted'],summary['depth_screen_limit_um'],
+                         summary['width_screen_limit_um'],"已分析；可信度见质量页",result["source"]["format"],result["source"]["height_status"],
+                         result["source"]["dy_source"],result["dy"],result["source"]["height_basis"]+"；"+result["source"]["missing_policy"]+
+                         ("；比例="+str(result["source"]["height_scale_um"])+"，偏移="+str(result["source"]["height_offset_um"])+"；"+
+                          result["source"]["acquisition_validity"] if result["source"]["format"] == "lsm" else ""),
+                         orientation_note(result["source"]), result["source"]["orientation"]["requested"],
+                         result["source"]["orientation"]["original_y_source"],
+                         ("物理XY方向校正后的沿槽步距" if result['source']['orientation']['rectified'] else
+                          result["source"]["orientation"]["original_y_source"] if result["source"]["orientation"]["transposed"] else "原始X坐标"),
+                         result['source']['orientation']['angle_deg'],result['source']['orientation']['rectified'],
+                         ('非仿射局部法向映射：坐标与质量掩码见运行JSON' if result['source']['orientation'].get('mapping_kind')=='local_normals' else json.dumps(result['source']['orientation'].get('analysis_index_to_original_row_col'),ensure_ascii=False)),
+                         result['source']['orientation']['evidence'].get('direction_review_flag','')])
         for strip in paper["strips"]:
             cols=strip["columns"]
             ps.append([result["path"].stem,strip["fraction"],strip["center_column"],strip["x_um"],
                        cols[0] if cols else None,cols[-1] if cols else None,len(cols),strip.get("actual_span_um"),
                        strip["depth_um"],"是" if strip["valid"] else "否",strip["reason"],strip["width_um"],
                        "是" if strip["width_valid"] else "否",strip["width_reason"],strip.get("noise_um"),
-                       strip["area_um2"],strip["equivalent_depth_um"],strip.get("bottom_y_px"),strip.get("center_drift_um"),"；".join(strip["flags"])])
+                       strip["area_um2"],strip["equivalent_depth_um"],strip.get("bottom_y_px"),strip.get("center_drift_um"),"；".join(strip["flags"]),
+                       strip['group']+1,strip['attempt'],strip['depth_selected'],strip['width_selected'],
+                       strip['depth_outlier_candidate'],strip['width_outlier_candidate'],strip['depth_excluded'],strip['width_excluded']])
             if "baseline_um" in strip:
                 for k in range(len(strip["mean_profile_um"])):
                     pd.append(jsonable([result["path"].stem,strip["fraction"],k,k*result["dy"],strip["support_counts"][k],
@@ -710,8 +892,8 @@ def write_excel(results, xlsx: Path):
                               strip["residual_um"][k],strip["smoothed_residual_um"][k],bool(strip["reference_mask"][k])]))
         for key,variant in paper["sensitivity"].items():
             se.append([result["path"].stem,key,variant["summary"]["depth_mean_um"],variant["summary"]["n_depth"],
-                       *variant["depths_um"],"；".join(variant["reasons"])])
-    for sheet in (ps,pd,se):
+                       *variant["depths_um"],*[None]*(max_positions-len(variant["depths_um"])),"；".join(variant["reasons"])])
+    for sheet in (ps,pd,se,settings):
         sheet.freeze_panes="C2"
         sheet.auto_filter.ref=sheet.dimensions
         for cell in sheet[1]:
@@ -722,7 +904,68 @@ def write_excel(results, xlsx: Path):
         for col in range(1,sheet.max_column+1): sheet.column_dimensions[get_column_letter(col)].width=18
     for col in ("K","N","T"): ps.column_dimensions[col].width=45
     se.column_dimensions["B"].width=30
-    se.column_dimensions["H"].width=55
+    se.column_dimensions[get_column_letter(max_positions+5)].width=55
+    settings.column_dimensions['I'].width=70
+    for col, width in (("J", 14), ("K", 42), ("L", 28), ("M", 18), ("N", 85)):
+        settings.column_dimensions[col].width = width
+    for col in ("O", "P", "Q", "R"):
+        settings.column_dimensions[col].width = 48
+    settings.column_dimensions['U'].width = 75
+    settings.column_dimensions['V'].width = 60
+    for row in settings.iter_rows(min_row=2):
+        if isinstance(row[8].value, str) and row[8].value.startswith("跳过："):
+            row[8].alignment = Alignment(vertical="top", wrap_text=True)
+            settings.row_dimensions[row[0].row].height = 90
+        for cell in row[14:]:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        if row[9].value == "txt":
+            settings.row_dimensions[row[0].row].height = 45
+        if row[9].value == "lsm":
+            for cell in row[10:]:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+            settings.row_dimensions[row[0].row].height = 90
+
+    # 将可信度、局部参考值与排除原因置于可筛选的独立页，避免空白被误读为零。
+    qs=wb.create_sheet('质量与局部参考')
+    qs.append(['文件','方向策略','测量项','整槽主均值（µm）','局部有效区参考（µm，非整槽结论）',
+               '有效分区','计划分区','质量失败候选','孤立偏差排除候选','可信度','汇总状态','说明'])
+    for result in results:
+        summary=result['paper']['summary']
+        strategy=result['source']['orientation'].get('strategy','global_straight')
+        for metric,label in (('depth','槽深'),('width','槽宽')):
+            qs.append([result['path'].name,strategy,label,summary[metric+'_mean_um'],
+                summary[metric+'_partial_mean_um'] if summary[metric+'_mean_um'] is None else None,
+                summary['n_'+metric],summary['n_planned'],summary[metric+'_quality_failed_attempts'],
+                summary[metric+'_excluded_attempts'],summary[metric+'_confidence'],summary[metric+'_status'],
+                '局部参考只概括已通过区段；缺失/异常不当作零。方向和质量阈值为操作参数，未作独立仪器验证。'])
+    qs.freeze_panes='D2';qs.auto_filter.ref=qs.dimensions
+    for col,width in enumerate((15,23,12,22,29,12,12,18,23,38,48,80),1):
+        qs.column_dimensions[get_column_letter(col)].width=width
+    for cell in qs[1]:
+        cell.font,cell.fill=HEAD_FONT,HEAD_FILL
+    for row in qs.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment=Alignment(vertical='top',wrap_text=True)
+            if isinstance(cell.value,float):cell.number_format=NUM
+        qs.row_dimensions[row[0].row].height=65
+        if '待复核' in row[9].value or row[3].value is None:
+            for cell in row:cell.fill=PatternFill('solid',fgColor='FFF2CC')
+    for col,label in enumerate(('取样策略','槽深可信度','槽宽可信度','方向有效'),29):
+        ps.cell(1,col,label)
+    rr=2
+    for result in results:
+        for strip in result['paper']['strips']:
+            for col,value in enumerate((strip.get('sampling_strategy','standard_strip'),strip['depth_confidence'],
+                                       strip['width_confidence'],strip.get('geometry_valid',True)),29):
+                ps.cell(rr,col,value)
+            if not strip['valid'] or not strip['width_valid'] or strip['depth_excluded'] or strip['width_excluded']:
+                for col in (10,11,13,14,20,30,31):
+                    ps.cell(rr,col).fill=PatternFill('solid',fgColor='FCE4D6')
+            rr+=1
+    for col in range(29,33):
+        ps.column_dimensions[get_column_letter(col)].width=38
+        ps.cell(1,col).font,ps.cell(1,col).fill=HEAD_FONT,HEAD_FILL
+    ps.auto_filter.ref=ps.dimensions
 
     try:
         wb.save(xlsx)
@@ -733,6 +976,20 @@ def write_excel(results, xlsx: Path):
 
 
 # ---------------------------------------------------------------- 作图
+def _lsm_plot_status(fig, results):
+    """独立导出的诊断/比较图也携带标定状态，避免脱离审计后被当成正式测量。"""
+    states = sorted({r["source"]["height_status"] for r in results
+                     if r.get("source", {}).get("format") == "lsm"})
+    notes = sorted({orientation_note(r.get("source", {})) for r in results} - {""})
+    if len(results)>1 and any(r.get('source',{}).get('orientation',{}).get('rectified') for r in results):
+        notes=['分级方向校正：整槽直线 / 局部法向；逐文件方向、支撑及可信度见Excel/JSON']
+    if states or notes:
+        text = ("LSM高度换算："+"；".join(states)+"；" if states else "") + "；".join(notes)
+        fig.text(.5, .012, text, ha="center", fontsize=8, color="#9b3b20")
+        return .055
+    return 0
+
+
 def plot_opening_file(r, out_png: Path):
     import matplotlib
     matplotlib.use("Agg")
@@ -790,7 +1047,9 @@ def plot_opening_file(r, out_png: Path):
     aw.set(title=f"开口有效 {r['n_open']}/{r['n_all']}", xlabel="X（µm）", ylabel="开口宽度（µm）")
     aw.grid(alpha=.25)
     aw.legend(fontsize=8)
-    note = "Y 步距按 X 假定" if r["dy_assumed"] else "Y 步距已指定"
+    note = "Y 步距按 X 假定" if r["dy_assumed"] else "Y 步距："+r.get("source", {}).get("dy_source", "已指定")
+    if r.get("source", {}).get("format") == "lsm":
+        note += "；"+r["source"]["height_status"]
     fig.suptitle(f"{ALGORITHM_VERSION} | {note}：{dy:.5g} µm | 孤立尖点修复 {int(r['repaired'].sum())}；多槽/缺失/拟合失败保留标记", fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, .95))
     fig.savefig(out_png, dpi=150)
@@ -865,19 +1124,32 @@ def analyse_depth_quality(r):
         variants["zero_as_height"] = m["depth"]  # 实际有限零值由下方原始掩码准确恢复。
         m["depth_variants"] = variants
     # 重新读取仅用于区分有限零值和非有限缺失，不改原始文件。
-    lines = r["path"].read_bytes().replace(b"\x00",b"").splitlines()[1:]
-    original = np.array([[float(v) for v in ln.split(b"\t")[1:]] for ln in lines if ln.strip()])
-    zeros = np.isfinite(original) & (original == 0)
+    if r.get("source", {}).get("format") == "lsm":
+        original = r["Z"].copy()
+        original[r["missing"]] = np.nan
+    else:
+        lines = r["path"].read_bytes().replace(b"\x00",b"").splitlines()[1:]
+        original = np.array([[float(v) for v in ln.split(b"\t")[1:]] for ln in lines if ln.strip()])
+        if r.get("source", {}).get("orientation", {}).get("rectified"):
+            original,_=resample_height(original,~np.isfinite(original),r['source']['orientation'])
+        elif r.get("source", {}).get("orientation", {}).get("transposed"):
+            original = original.T
+    zeros = ((r['missing'] & np.isfinite(original)) if r['source']['orientation'].get('rectified')
+             and r['source']['format']=='txt' else np.isfinite(original) & (original == 0))
     r["zero_mask"] = zeros
+    restored_heights=r['Zclean'].copy()
+    restored_heights[zeros]=original[zeros]
+    r['zero_restored_height']=restored_heights
+    r['zero_restored_missing']=~np.isfinite(original)
     for m in r["res"]:
         if m is None:
             continue
         j = m["col"]
         restored = r["Zclean"][:,j].copy()
-        restored[zeros[:,j]] = 0.0
+        restored[zeros[:,j]] = original[zeros[:,j],j]
         m["depth_variants"]["zero_as_height"] = _depth_minimum(
             smooth_edge(restored,SMOOTH_Y)-np.polyval(m["baseline_coeff"],y),y0)
-        if zeros[:,j].any():
+        if zeros[:,j].any() and r.get("source", {}).get("format") != "lsm":
             m["depth_flags"].append("原始零值解释待确认")
     values = np.array([m["depth"] for m in valid])
     median = lambda v: float(np.median(v)) if len(v) else float("nan")
@@ -953,14 +1225,14 @@ def plot_depth_v3_file(r, out_png):
     if valid:
         ad.axhline(r["depth"][0],c="C1",ls="--",label=f"中位数 {r['depth'][0]:.3f} µm")
         ad.axhspan(*r["q_depth"],color="C0",alpha=.1,label="P25–P75空间分布")
-    ad.set(title=f"沿槽深度分布：有效 {r['n_depth']}/{r['n_all']}",xlabel="X（µm）",ylabel="剩余槽深（µm）")
+    ad.set(title=f"沿槽深度分布：有效 {r['n_depth']}/{r['n_all']}",xlabel="X（µm）",ylabel="槽深（µm）")
     ad.legend(fontsize=7)
     vals = [m["depth"] for m in valid]
     if vals: ah.hist(vals,bins=30,color="C0",alpha=.75)
-    ah.set(title="有效列深度分布；非独立重复实验",xlabel="剩余槽深（µm）",ylabel="列数")
+    ah.set(title="有效列深度分布；非独立重复实验",xlabel="槽深（µm）",ylabel="列数")
     for ax in (ap,ad,ah): ax.grid(alpha=.2)
-    fig.suptitle(f"{r['path'].stem} | {ALGORITHM_VERSION} | CMP后剩余槽深；缺少CMP前测量，不能计算去除量",fontsize=12)
-    fig.tight_layout(rect=(0,0,1,.96))
+    fig.suptitle(f"{r['path'].stem} | {ALGORITHM_VERSION} | 槽深与开口宽度测量",fontsize=12)
+    fig.tight_layout(rect=(0,_lsm_plot_status(fig, [r]),1,.96))
     fig.savefig(out_png,dpi=150)
     plt.close(fig)
 
@@ -971,17 +1243,17 @@ def plot_depth_v3_comparison(results,out_png):
     xx = np.arange(1,len(results)+1)
     med = np.array([r["depth"][0] for r in results])
     q = np.array([r["q_depth"] for r in results]).T
-    ax.errorbar(xx,med,yerr=np.vstack((med-q[0],q[1]-med)),fmt="o-",capsize=5,label="剩余槽深中位数及P25–P75")
+    ax.errorbar(xx,med,yerr=np.vstack((med-q[0],q[1]-med)),fmt="o-",capsize=5,label="槽深中位数及P25–P75")
     ax.plot(xx,[r["depth_without_candidates"] for r in results],"s--",label="假设排除整体3MAD候选（仅敏感性）")
-    ax.set(title="功率随编号增加；不施加单调约束",xlabel="样品编号",ylabel="CMP后剩余槽深（µm）",xticks=xx)
+    ax.set(title="功率随编号增加；不施加单调约束",xlabel="样品编号",ylabel="槽深（µm）",xticks=xx)
     for k,label in (("linear_70_165","线性平台70–165"),("quadratic_90_180","二次平台90–180"),
                     ("quadratic_110_200","二次平台110–200"),("smooth_3","3像素平滑"),("smooth_15","15像素平滑")):
         ass.plot(xx,[r["depth_sensitivity"][k] for r in results],"o-",ms=3,label=label)
     ass.plot(xx,med,"k--",lw=1.5,label="主结果：二次70–165 / 平滑9")
     ass.set(title="同一批有效列的算法敏感性",xlabel="样品编号",ylabel="深度中位数（µm）",xticks=xx)
     for a in (ax,ass): a.grid(alpha=.2); a.legend(fontsize=8)
-    fig.suptitle("1–6仅有CMP后测量；空间分布不是实验重复置信区间；不能反推初始深度",fontsize=11)
-    fig.tight_layout(rect=(0,0,1,.95))
+    fig.suptitle("空间分布不是实验重复置信区间；样品间差异需独立重复实验验证",fontsize=11)
+    fig.tight_layout(rect=(0,_lsm_plot_status(fig, results),1,.95))
     fig.savefig(out_png,dpi=160)
     plt.close(fig)
 
@@ -1004,8 +1276,10 @@ def write_depth_audit(results,path):
                                        reason=m["depth_reason"],flags=m["depth_flags"],noise_um=m["noise"],
                                        baseline_coeff=m["baseline_coeff"].tolist(),yc_px=m["yc"],
                                        variants=m["depth_variants"]) if m else None for m in r["res"]]))
+        if r.get("source", {}).get("format") == "lsm":
+            data[-1]["source"] = r["source"]
     path.write_text(json.dumps(dict(algorithm=ALGORITHM_VERSION,baseline="quadratic70-165",smooth_y=SMOOTH_Y,
-                                   power_order="1<2<3<4<5<6",before_cmp="not_saved",files=data),ensure_ascii=False,indent=2,allow_nan=False),encoding="utf-8")
+                                   files=data),ensure_ascii=False,indent=2,allow_nan=False),encoding="utf-8")
 
 
 def _depth_selftest():
@@ -1035,58 +1309,47 @@ def plot_file(r, out_png):
     plt.rcParams["font.sans-serif"]=["Microsoft YaHei","SimHei","DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"]=False
     fig,axes=plt.subplots(2,2,figsize=(13,9))
-    am,ap,ad,ab=axes.flat
-    paper=r["paper"]
+    am,ap,ad,aw=axes.flat
+    paper=r["paper"]; summary=paper["summary"]
     x=r["x"]-r["x"][0]
     y=np.arange(r["Z"].shape[0])*r["dy"]
     lo,hi=np.nanpercentile(r["Z"],[2,98])
     im=am.imshow(r["Z"],extent=(x[0],x[-1],y[-1],0),aspect="auto",cmap="terrain",vmin=lo,vmax=hi)
     fig.colorbar(im,ax=am,label="原始插值高度 Z（µm）")
-    candidates=np.array([m["depth"] if m else np.nan for m in r["res"]])
-    ad.plot(x[r["cols"]],candidates,color=".65",lw=.8,label="v3各列候选最大深度（含无效）")
-    for i,strip in enumerate(paper["strips"]):
-        color=f"C{i}"
-        columns=strip["columns"]
-        if columns:
-            am.axvspan(x[columns[0]],x[columns[-1]],color=color,alpha=.30)
-            am.axvline(x[strip["center_column"]],color=color,lw=.9)
-            am.text(x[strip["center_column"]],y[-1]*.08,f"{strip['fraction']:.0%}",color=color,ha="center",
-                    bbox=dict(facecolor="white",alpha=.8,edgecolor="none"))
-            ad.axvspan(x[columns[0]],x[columns[-1]],color=color,alpha=.10)
-        if "smoothed_residual_um" in strip:
-            d=strip["smoothed_residual_um"]
-            ap.plot(y,strip["residual_um"],color=color,lw=.6,alpha=.35)
-            value=strip["depth_um"]
-            ap.plot(y,d,color=color,lw=1.3,label=f"{strip['fraction']:.0%}位置：{value:.3f} µm"+("" if strip["valid"] else "（无效）"))
-            ref=strip["reference_mask"]
-            ap.scatter(y[ref][::8],d[ref][::8],s=7,color=color)
-            ap.scatter(strip["bottom_y_px"]*r["dy"],-value,color=color,s=22,marker="o" if strip["valid"] else "x")
-            ad.plot(x[strip["center_column"]],value,"o" if strip["valid"] else "x",color=color,ms=7)
-        value=strip["depth_um"]
-        if value is not None:
-            bar=ab.bar(i+1,value,color=color,alpha=.75)
-            if not strip["valid"]:bar[0].set_hatch("///")
-            ab.annotate(f"{value:.3f}",(i+1,value),xytext=(0,5),textcoords="offset points",ha="center",fontsize=9)
-    am.set(title=f"预定条带：请求宽度 {paper['parameters']['strip_width_um']:.3g} µm",xlabel="X（µm）",ylabel="Y（µm）")
-    ap.axhline(0,c="k",ls=":",lw=1)
-    ap.set_xlim(max(0,(r["y0"]-175)*r["dy"]),min(y[-1],(r["y0"]+175)*r["dy"]))
-    ap.set(title="先平均再测深；小点为平台支撑，大点为槽底",xlabel="Y（µm）",ylabel="相对平台高度（µm）")
-    handles,labels=ap.get_legend_handles_labels()
-    if handles:ap.legend(fontsize=8)
-    depth=paper["summary"]["depth_mean_um"]
-    if depth is not None:
-        for ax in (ad,ab):ax.axhline(depth,color="k",ls="--",label=f"三位置均值 {depth:.3f} µm")
-    if np.isfinite(r["depth"][0]):
-        ab.axhline(r["depth"][0],color=".5",ls=":",label=f"v3空间中位数 {r['depth'][0]:.3f} µm")
-    ad.set(title="固定位置与整图空间起伏的关系",xlabel="X（µm）",ylabel="剩余槽深（µm）")
-    ab.set(title=f"固定位置深度：有效 {paper['summary']['n_depth']}/3；斜线柱为无效",xticks=[1,2,3],
-           xticklabels=[f"{s['fraction']:.0%}" for s in paper["strips"]],ylabel="平均剖面槽深（µm）")
-    ab.margins(y=.18)
-    for ax in (ap,ad,ab):ax.grid(alpha=.2)
-    ad.legend(fontsize=8)
-    ab.legend(fontsize=8)
-    fig.suptitle(f"{r['path'].stem} | {ALGORITHM_VERSION} | 多位置条带平均剖面；3个位置是空间取样，非3次独立实验",fontsize=11)
-    fig.tight_layout(rect=(0,0,1,.96))
+    for strip in paper["strips"]:
+        color=f"C{strip['group']%10}"
+        selected=strip['depth_selected'] or strip['width_selected']
+        if selected:
+            columns=strip['columns']
+            am.axvspan(x[columns[0]],x[columns[-1]],color=color,alpha=.20)
+            if 'smoothed_residual_um' in strip:
+                ap.plot(y,strip['smoothed_residual_um'],color=color,lw=.9,alpha=.8)
+                if strip['width_selected']:
+                    ap.scatter(np.array([strip['left_open_px'],strip['right_open_px']])*r['dy'],[0,0],s=12,color=color)
+        for metric,ax,key,valid in (("depth",ad,"depth_um","valid"),("width",aw,"width_um","width_valid")):
+            value=strip[key]
+            if value is None: continue
+            excluded=strip[metric+'_excluded']
+            chosen=strip[metric+'_selected']
+            ax.plot(x[strip['center_column']],value,'o' if chosen else 'x',
+                    color=color if chosen else 'C3' if excluded else '.70',
+                    alpha=1 if chosen else .45,ms=5 if chosen else 3)
+    for metric,ax in (("depth",ad),("width",aw)):
+        mean=summary[metric+'_mean_um']
+        if mean is not None:
+            ax.axhline(mean,color='k',ls='--',label=f"入选均值 {mean:.3f} µm")
+            ax.legend(fontsize=8)
+        ax.set_title(f"{metric} 入选 {summary['n_'+metric]}/{summary['n_planned']}；备用候选区 {summary[metric+'_replacements']}")
+        ax.set_xlabel('沿槽位置 X（µm）')
+        ax.set_ylabel('槽深（µm）' if metric=='depth' else '基准面开口宽度（µm）')
+        ax.grid(alpha=.2)
+    am.set(title="入选条带；每区每指标最多一个位置",xlabel="X（µm）",ylabel="Y（µm）")
+    ap.axhline(0,c='k',ls=':',lw=1)
+    ap.set_xlim(max(0,(r['y0']-100)*r['dy']),min(y[-1],(r['y0']+100)*r['dy']))
+    ap.set(title="入选平均剖面；基准线上的点为开口交点",xlabel="Y（µm）",ylabel="相对平台高度（µm）")
+    ap.grid(alpha=.2)
+    fig.suptitle(f"{r['path'].stem} | {ALGORITHM_VERSION} | 分区随机取样；圆点入选，灰叉备用/无效，红叉统计排除",fontsize=11)
+    fig.tight_layout(rect=(0,_lsm_plot_status(fig, [r]),1,.96))
     fig.savefig(out_png,dpi=150)
     plt.close(fig)
 
@@ -1097,7 +1360,7 @@ def plot_depth_comparison(results,out_png):
     xx=np.arange(1,len(results)+1)
     get=lambda value: np.nan if value is None else value
     means=np.array([get(r["paper"]["summary"]["depth_mean_um"]) for r in results])
-    ax.plot(xx,means,"o-",color="C0",label="三位置平均剖面槽深 均值")
+    ax.plot(xx,means,"o-",color="C0",label="分区平均剖面槽深 均值")
     for i,r in enumerate(results):
         p=r["paper"]
         val=p["summary"]["depth_mean_um"]
@@ -1108,18 +1371,51 @@ def plot_depth_comparison(results,out_png):
                 ax.plot(xx[i]+(s["fraction"]-.5)*.25,s["depth_um"],"." if s["valid"] else "x",color="C0",alpha=.5,ms=6)
     ax.plot(xx,[r["depth"][0] for r in results],"s--",color=".5",label="v3：逐剖面最大深度的空间中位数")
     ax.plot(xx,[r["paper"]["central_80pct"]["depth_um"] if r["paper"]["central_80pct"]["valid"] else np.nan for r in results],"^:",color="C2",label="中央80%平均剖面（辅助）")
-    ax.set(title="处理顺序和取样定义改变；误差棒为3位置SD",xlabel="样品编号（功率递增）",ylabel="CMP后剩余槽深（µm）",xticks=xx)
+    ax.set(title="处理顺序和取样定义改变；误差棒为入选位置SD",xlabel="样品编号",ylabel="槽深（µm）",xticks=xx)
     for key,label in (("half_width","半宽条带"),("double_width","双宽条带"),
                       ("linear_baseline","线性平台基准"),("outer_baseline","外移平台区90–180"),
-                      ("positions_minus_5pct","位置整体前移5%"),("positions_plus_5pct","位置整体后移5%")):
+                      ("smooth_1","不平滑"),("smooth_5","5像素平滑")):
         asens.plot(xx,[get(r["paper"]["sensitivity"][key]["summary"]["depth_mean_um"]) if key in r["paper"]["sensitivity"] else np.nan for r in results],"o-",ms=3,label=label)
-    asens.plot(xx,means,"k--",lw=1.5,label="默认固定参数主结果")
-    asens.set(title="方法敏感性；未通过全部位置则留空",xlabel="样品编号",ylabel="三位置平均槽深（µm）",xticks=xx)
+    asens.plot(xx,means,"k--",lw=1.5,label="默认分区取样主结果")
+    asens.set(title="方法敏感性；固定主取样位置和入选集",xlabel="样品编号",ylabel="分区平均槽深（µm）",xticks=xx)
     for a in (ax,asens):a.grid(alpha=.2);a.legend(fontsize=8)
-    fig.suptitle("文献启发的平均剖面法；条带宽度为本项目参数；缺CMP前数据，不计算绝对去除量",fontsize=11)
-    fig.tight_layout(rect=(0,0,1,.95))
+    fig.suptitle("文献启发的平均剖面法；条带宽度与取样位置为本项目参数",fontsize=11)
+    fig.tight_layout(rect=(0,_lsm_plot_status(fig, results),1,.95))
     fig.savefig(out_png,dpi=160)
     plt.close(fig)
+
+
+def _transition_selftest():
+    """解析弯曲槽壁与干扰反例；备用定位不能通过放松直线残差得到。"""
+    y = np.arange(512, dtype=float)
+    for power in (1.4, 2., 3.):
+        for shift in (0., .3, .7):
+            distance = np.minimum(y-(220+shift), (292+shift)-y)
+            d = -np.minimum(20., .2*np.maximum(distance, 0)**power)
+            opening = measure_opening(d, 256, .001)
+            assert opening['valid'], "有平坦平台的连续弯曲陡壁应可定位"
+            assert abs(opening['right']['pos']-opening['left']['pos']-72) < 2
+            for side, truth in (("left", 220+shift), ("right", 292+shift)):
+                wall = opening[side]
+                assert abs(wall['pos']-truth) < 1.5
+                assert abs(wall['pos']-truth) <= wall['uncertainty_px']
+    for d, boundary in ((-.02*(y-220), 221),
+                        (np.where(y < 220, 1., -(y-220)), 221),
+                        (np.where(y == 221, -1., 0.), 221)):
+        assert _locate_supported_transition(d, boundary, 1, .001)[0] is None
+    # 凹陷位于参考槽心之外，仍须被邻槽保护拒绝。
+    neighbor = -np.minimum(20., .2*np.maximum(np.minimum(y-270, 300-y), 0)**2)
+    assert not measure_opening(neighbor, 256, .001)['valid']
+    # 定位区的插补高度不能算真实支撑，必须在平均剖面层拒绝。
+    from profile_measurement import measure_strip
+    d = -np.minimum(20., .2*np.maximum(np.minimum(y-220, 292-y), 0)**2)
+    z = np.tile(d[:, None]+25, (1, 31))
+    missing = np.zeros(z.shape, bool)
+    missing[216:225] = True
+    strip = measure_strip(np.arange(31.), z, missing, 256, 1., robust_poly,
+                          measure_opening, fraction=.5)
+    assert not strip['width_valid'] and strip['width_reason'] == '槽口拟合真实支撑不足'
+    print('  弯曲陡壁自检：9种已知宽度/亚像素位置、定位尺度、缓坡/凸起/坏点/邻槽/缺失保护通过')
 
 
 def _selftest():
@@ -1182,17 +1478,18 @@ def _selftest():
     print(f"  深坑不改开口：{widths[0]:.3f} / {widths[1]:.3f} um")
     _depth_selftest()
     profile_selftest(robust_poly, measure_opening)
+    sampling_selftest(robust_poly, measure_opening)
+    _transition_selftest()
+    orientation_selftest(robust_poly,measure_opening)
+    from groove_local import selftest as local_selftest
+    local_selftest(robust_poly,measure_opening)
     print("[自检通过] 深度独立质量检查、搜索边界、缺失、连续深区保护；开口及辅助宽度回归")
     return 0
 
 
 # ---------------------------------------------------------------- 主流程
-def find_inputs(data_dir: Path):
-    files = [p for p in data_dir.glob("*.txt") if p.is_file()]
-    if not files:
-        files = [p for p in data_dir.rglob("*.txt") if p.is_file()]
-    return sorted(files, key=lambda p: [int(t) if t.isdigit() else t
-                                        for t in re.split(r"(\d+)", p.name)])
+def find_inputs(data_dir: Path, input_format="auto", samples=None):
+    return discover_inputs(data_dir, input_format, samples)[0]
 
 
 def clean_output_directory(out_root: Path, input_dir: Path):
@@ -1268,44 +1565,89 @@ def clean_output_directory(out_root: Path, input_dir: Path):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="CLSM 三维形貌槽宽/槽深批量测量")
-    ap.add_argument("--dir", default=None, help="输入目录（默认脚本同级 data/3d）")
-    ap.add_argument("--out", default=None, help="测量输出目录（默认 out/paper_v4）；指定时2D/3D图也写入该目录")
+    ap.add_argument("--dir", default=None, help="输入目录（默认脚本同级 data）")
+    ap.add_argument("--out", default=None, help="图表与审计输出目录（默认 results/out/paper_v5）；指定时2D/3D图也写入该目录")
     ap.add_argument("--no-plot", action="store_true", help="只出 Excel，不导出示意图")
     ap.add_argument("--selftest", action="store_true", help="运行合成数据自检")
-    ap.add_argument("--clean-out", action="store_true", help="写入结果前清空本模块out；启动批处理自动启用")
-    ap.add_argument("--xlsx", default=None, help="Excel 保存位置（默认输出目录/groove_paper_results.xlsx）")
-    ap.add_argument("--dy", type=float, default=None, help="真实 Y 步距（µm）；省略时按 X 步距假定")
+    ap.add_argument("--groove-axis", choices=("auto", "horizontal", "vertical"), default="auto",
+                    help="默认auto识别直槽并在物理XY中校正，沿槽X/法向Y；horizontal/vertical仅限制主方向，仍校正斜切")
+    ap.add_argument("--clean-out", action="store_true", help="写入结果前清空本模块 results/out；启动批处理自动启用")
+    ap.add_argument("--xlsx", default=None, help="Excel 保存位置（默认脚本同级 results/groove_paper_results.xlsx）")
+    ap.add_argument("--dy", type=float, default=None, help="原始Y步距（µm），在纵槽交换XY之前应用；TXT省略时按X步距假定；LSM省略时使用文件Y标定")
     ap.add_argument("--strip-width-um",type=float,default=STRIP_WIDTH_UM,help="平均剖面条带物理宽度µm，默认12.6")
-    ap.add_argument("--profile-positions",type=float,nargs=3,default=PROFILE_POSITIONS,help="3个固定取样位置，0–1，默认0.25 0.5 0.75")
+    ap.add_argument("--profile-positions",type=float,nargs='+',default=None,help="可选固定初始位置，0–1严格递增；无效候选仍在各自分区内补测")
+    ap.add_argument("--profile-count",type=int,default=DEFAULT_COUNT,help="分层随机分区数，默认9；固定位置模式以传入位置数为准")
+    ap.add_argument("--random-seed",type=int,default=DEFAULT_SEED,help="随机种子，默认20261029；与目录文件数量/处理顺序无关")
+    ap.add_argument("--max-attempts",type=int,default=DEFAULT_ATTEMPTS,help="每区最多预设候选数，默认4；不无限重抽")
+    add_input_arguments(ap)
     args = ap.parse_args(argv)
 
     if args.selftest:
         return _selftest()
 
     here = Path(__file__).resolve().parent
-    data_dir = Path(args.dir) if args.dir else here / "data" / "3d"
-    out_dir = Path(args.out) if args.out else here / "out" / "paper_v4"
-    xlsx = Path(args.xlsx) if args.xlsx else out_dir / "groove_paper_results.xlsx"
-    files = find_inputs(data_dir)
+    data_dir = Path(args.dir) if args.dir else here / "data"
+    out_dir = Path(args.out) if args.out else here / "results" / "out" / "paper_v5"
+    xlsx = Path(args.xlsx) if args.xlsx else here / "results" / "groove_paper_results.xlsx"
+    try:
+        files, ignored = discover_inputs(data_dir, args.input_format, args.samples)
+    except ValueError as exc:
+        print(f"[错误] {exc}")
+        return 2
     if not files:
-        print(f"[错误] 目录中没有 txt 数据: {data_dir}")
+        print(f"[错误] 目录中没有所选 TXT/LSM 数据: {data_dir}")
         return 2
 
     print(f"输入目录: {data_dir}")
     print(f"待处理文件: {len(files)} 个\n")
 
-    results = []
+    if args.profile_count < 1 or args.random_seed < 0 or args.max_attempts < 1:
+        ap.error("分区数、候选次数须为正整数，随机种子须非负")
+    if args.lsm_height_scale_um is None and args.lsm_height_offset_um != 0:
+        ap.error("LSM高度偏移须与 --lsm-height-scale-um 配套指定")
+    for path, reason in ignored:
+        print(f"[输入筛选] {path.name}: {reason}")
+    # 在清理或写入前检查全部LSM；默认显式记录跳过项，不将未知高度当作有效输入。
+    preloaded, preflight_errors = {}, []
+    for path in files:
+        if path.suffix.casefold() == ".lsm":
+            try:
+                preloaded[path] = read_3d(path, return_source=True, **lsm_options(args))
+            except (ValueError, OSError) as exc:
+                preflight_errors.append((path.name, str(exc)))
+                continue
+            print(f"[LSM] {path.name}: {preloaded[path][4]['height_status']}")
+    if preflight_errors:
+        for name, reason in preflight_errors:
+            print(f"[{'错误' if args.strict_inputs else '跳过'}] {name}: {reason}")
+        if args.strict_inputs or len(preflight_errors) == len(files):
+            print(f"[预检查停止] {len(preflight_errors)}/{len(files)} 个输入尚不可定量；原始数据、旧out及工作簿未改动。")
+            return 6
+        failed_names = {name for name, _ in preflight_errors}
+        files = [path for path in files if path.name not in failed_names]
+        print(f"[预检查] 跳过 {len(preflight_errors)} 个不可处理输入，继续分析 {len(files)} 个文件。")
+    results, skipped = [], ([(str(p.relative_to(data_dir)), reason) for p, reason in ignored]
+                            + preflight_errors)
     for p in files:
         try:
-            r = analyse_file(p, dy_override=args.dy, strip_width_um=args.strip_width_um, profile_positions=args.profile_positions)
+            r = analyse_file(p, dy_override=args.dy, strip_width_um=args.strip_width_um, profile_positions=args.profile_positions,
+                             profile_count=args.profile_count,random_seed=args.random_seed,max_attempts=args.max_attempts,
+                             input_data=preloaded.get(p), groove_axis=args.groove_axis, **lsm_options(args))
         except Exception as exc:                          # noqa: BLE001
             print(f"[跳过] {p.name}: {exc}")
+            skipped.append((p.name,str(exc)))
             continue
         results.append(r)
+        print(f"[方向] {p.name}: {orientation_note(r['source'])}")
         paper=r["paper"]["summary"]
         value=paper["depth_mean_um"]
-        text=f"{value:.3f} um" if value is not None else "不可汇总（固定位置未全部通过）"
-        print(f"  {p.name:>12}  平均剖面深度 {text}  有效 {paper['n_depth']}/3  v3对照 {r['depth'][0]:.3f} um")
+        width=paper["width_mean_um"]
+        text=f"{value:.3f} um" if value is not None else "不可汇总（见状态）"
+        wtext=f"{width:.3f} um" if width is not None else "不可汇总（见状态）"
+        print(f"  {p.name:>12}  平均剖面深度 {text}  入选 {paper['n_depth']}/{paper['n_planned']}  "
+              f"开口宽度 {wtext}  入选 {paper['n_width']}/{paper['n_planned']}  v3对照 {r['depth'][0]:.3f} um")
+        if value is None or width is None:
+            print(f"    槽深：{paper['depth_status']}；槽宽：{paper['width_status']}")
         if r["n_open"] < r["n_all"] / 2:
             print("    [注意] 可靠开口不足一半，请检查边界图和逐列原因。")
 
@@ -1315,16 +1657,25 @@ def main(argv=None):
 
     if args.clean_out:
         try:
-            removed = clean_output_directory(here / "out", data_dir)
+            removed = clean_output_directory(here / "results" / "out", data_dir)
         except (OSError, ValueError) as exc:
             print(f"[错误] 旧结果清理失败，停止写入本次结果：{exc}")
             return 5
         print(f"\n已清理out中的 {removed} 个旧文件。")
+        # 旧版本把工作簿写在模块根目录，残留会让人误读成本次结果
+        for name in ("groove_results.xlsx", "~$groove_results.xlsx"):
+            stale = here / name
+            if stale.exists() and stale.resolve() != xlsx.resolve():
+                try:
+                    stale.unlink()
+                    print(f"  已删除旧版工作簿 {stale.name}")
+                except OSError as exc:
+                    print(f"  [注意] 旧版工作簿 {stale.name} 未能删除（{exc}），请手动删除，勿以其为准。")
     out_dir.mkdir(parents=True, exist_ok=True)
     xlsx.parent.mkdir(parents=True, exist_ok=True)
 
     print("\n写入 Excel ...")
-    ok = write_excel(results, xlsx)
+    ok = write_excel(results, xlsx, skipped)
     if not ok:
         return 4
     print(f"  {xlsx}")
@@ -1335,13 +1686,17 @@ def main(argv=None):
         for r in results:
             png = out_dir / f"{r['path'].stem}.png"
             plot_file(r, png)
+            plot_orientation(r,out_dir / f"{r['path'].stem}_orientation.png")
             made.add(png.name)
         plot_depth_comparison(results, out_dir / "depth_comparison.png")
         print(f"  深度诊断图 {len(made) + 1} 张 -> {out_dir}")
         from surface_plots import plot_surfaces
-        surface_root = out_dir if args.out else here / "out"
+        surface_root = out_dir if args.out else here / "results" / "out"
         plot_surfaces(results, surface_root)
         print(f"  二维/三维形貌图各 {len(results)} 张 -> {surface_root / '2D'}、{surface_root / '3D'}")
+        from profile_plots import plot_profiles
+        plot_profiles(results,surface_root)
+        print(f"  二维/三维剖面图各 {len(results)} 张 -> {surface_root / '2D'}、{surface_root / '3D'}")
 
     for r in results:
         changed = r["repaired"]
@@ -1350,16 +1705,28 @@ def main(argv=None):
                             repaired_original=r["Z"][changed], repaired_values=r["Zclean"][changed])
 
     manifest = dict(algorithm=ALGORITHM_VERSION,
+                    runtime=dict(python=sys.version,numpy=np.__version__,executable=sys.executable),
                     source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                     profile_module_sha256=hashlib.sha256((here/"profile_measurement.py").read_bytes()).hexdigest(),
+                    sampling_module_sha256=hashlib.sha256((here/"profile_sampling.py").read_bytes()).hexdigest(),
+                    profile_plot_module_sha256=hashlib.sha256((here/"profile_plots.py").read_bytes()).hexdigest(),
+                    input_module_sha256=hashlib.sha256((here/"clsm_inputs.py").read_bytes()).hexdigest(),
+                    lsm_reader_sha256=hashlib.sha256((here/"inspect_zen_lsm.py").read_bytes()).hexdigest(),
+                    orientation_module_sha256=hashlib.sha256((here/"groove_orientation.py").read_bytes()).hexdigest(),
+                    local_module_sha256=hashlib.sha256((here/'groove_local.py').read_bytes()).hexdigest(),
+                    input_selection=dict(mode=args.input_format, same_name_priority="txt", samples=args.samples,
+                                         invalid_lsm_policy="stop" if args.strict_inputs else "skip"),
+                    ignored_inputs=[dict(file=str(p.relative_to(data_dir)),reason=reason) for p,reason in ignored],
+                    skipped_inputs=[dict(file=name,reason=reason) for name,reason in skipped],
                     parameters=dict(smooth_y=SMOOTH_Y, ref_in=REF_IN, ref_out=REF_OUT,
                                     opening_drop_um=OPEN_DROP_UM, opening_noise_k=OPEN_NOISE_K,
                                     opening_run=OPEN_RUN, opening_gap=OPEN_GAP, dy_override=args.dy,
+                                    opening_center_margin_px=OPEN_CENTER_MARGIN_PX,
                                     depth_min_um=MIN_DEPTH_UM, depth_min_snr=MIN_SNR, center_search=CENTER_SEARCH,
                                     zero_as_missing=ZERO_AS_MISSING, depth_outlier_mad=3,
-                                    sensitivity_fixed_selection=True),
+                                    sensitivity_fixed_selection=True, groove_axis=args.groove_axis, **lsm_options(args)),
                     files=[dict(name=r["path"].name, input_sha256=hashlib.sha256(r["path"].read_bytes()).hexdigest(),
-                                dy_um=r["dy"], dy_assumed=r["dy_assumed"],
+                                dy_um=r["dy"], dy_assumed=r["dy_assumed"], source=r["source"],
                                 opening_median_um=r["w_open"][0] if r["n_open"] else None,
                                 opening_p25_um=r["q_open"][0] if r["n_open"] else None,
                                 opening_p75_um=r["q_open"][1] if r["n_open"] else None,
@@ -1376,9 +1743,10 @@ def main(argv=None):
     write_depth_audit(results, out_dir / "depth_audit.json")
     paper_audit=dict(algorithm=ALGORITHM_VERSION,source_sha256=manifest["source_sha256"],
                      profile_module_sha256=hashlib.sha256((here/"profile_measurement.py").read_bytes()).hexdigest(),
-                     files=[dict(file=r["path"].name,**r["paper"]) for r in results])
+                     sampling_module_sha256=manifest["sampling_module_sha256"],
+                     files=[dict(file=r["path"].name,**r["paper"],
+                                 source=r["source"]) for r in results])
     (out_dir/"paper_profile_audit.json").write_text(json.dumps(jsonable(paper_audit),ensure_ascii=False,indent=2,allow_nan=False),encoding="utf-8")
-    print("\n当前仅有CMP后剩余槽深；缺少CMP前槽深，不能计算绝对去除量。")
     print("完成。")
     return 0
 

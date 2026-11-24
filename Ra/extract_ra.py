@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Zygo 轮廓仪界面截图 -> 面粗糙度 Ra 批量提取
+Zygo 截图 Ra 提取与 DAT 周期分离、四联图重建
 
 从 Zygo NewView 的 "Measure Controls" 面板读取面粗糙度 (Ra, nm),
 按区域分组 (区域 = 文件名中最后一个 "-" 之前的前缀, 如 3-4.bmp 属区域 3,
@@ -16,10 +16,10 @@ Si-2.bmp 属区域 Si; 名字不是 前缀-序号 格式时每 5 张一组) 求�
 
 输出:
     ra_results.xlsx          主表格
-    out/*.png                各图的三维表面图裁剪 (与原图同名, 左上角标注该图 Ra);
+    out/bmp/*.png                各图的三维表面图裁剪 (与原图同名, 左上角标注该图 Ra);
                              每个区域两张代表图加后缀: 离区域均值最近的一张 _medoid,
                              Ra 最小的一张 _min (同一张同时满足时带两个后缀)
-    out/min/ out/medoid/     上面两张代表图的副本, 按类别分开存放
+    out/bmp/min/ out/bmp/medoid/     上面两张代表图的副本, 按类别分开存放
 
 用法:
     python extract_ra.py                  # 处理 data 文件夹下的所有图片 (每个区域全读)
@@ -28,18 +28,15 @@ Si-2.bmp 属区域 Si; 名字不是 前缀-序号 格式时每 5 张一组) 求�
     python extract_ra.py --out ./result   # 指定输出目录
     python extract_ra.py --no-plot        # 不导出三维表面图
 
-每次运行会自动把 run_ra.bat 规范化成 GBK + CRLF (cmd 的要求),
+每次运行会自动把 run.bat 规范化成 GBK + CRLF (cmd 的要求),
 所以改完 bat 不用再单独跑转码工具。
 """
 
 from __future__ import annotations
 
-import argparse
 import re
-import shutil
 import struct
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -84,8 +81,8 @@ INK_THR = 140           # 白字二值化阈值
 # 纯黑绘图区, 含色标与色标数字、三轴刻度, 不含界面边框。
 # 已在 10 张样本上核验: 位置一致, 尺寸 602x325。
 PLOT_BOX = (669, 75, 1271, 400)
-PLOT_DIR = 'out'                # 裁剪图的输出子文件夹
-TAG_DIRS = ('min', 'medoid')    # 代表图分类子文件夹: out/min、out/medoid (顺序即文件名后缀顺序)
+PLOT_DIR = 'out/bmp'            # 截图三维图输出子文件夹
+TAG_DIRS = ('min', 'medoid')    # 代表图分类子文件夹（顺序即文件名后缀顺序）
 INPUT_DIR = 'data'              # 待处理截图的默认目录 (脚本同级的 data 文件夹)
 
 # 本脚本自身的输出产物, 扫描输入时必须排除 (避免输出被当成下一轮的输入)
@@ -236,13 +233,14 @@ def _label_font(size: int):
     return ImageFont.load_default()
 
 
-def export_plot(path: Path, out_path: Path, label: str | None = None):
+def export_plot(path: Path, out_path: Path, label: str | None = None, label_style=None):
     """
     裁出 Oblique Plot 区域并存成 PNG。
 
     PNG 为无损格式, 贴到 PPT/Word 里不会二次压缩失真。
     label 不为空时在左上角标注该图的 Ra。
     """
+    from plot_labels import annotate
     x0, y0, x1, y1 = PLOT_BOX
     if path.suffix.lower() == '.bmp':
         try:
@@ -257,11 +255,7 @@ def export_plot(path: Path, out_path: Path, label: str | None = None):
             arr = np.array(im.convert('RGB').crop(PLOT_BOX))
 
     img = Image.fromarray(arr)
-    if label:
-        # 左上角多为黑底, 但高起伏的图会顶到那里; 白字配黑描边保证任何背景都看得清
-        ImageDraw.Draw(img).text((10, 4), label, font=_label_font(44),
-                                 fill=(255, 255, 255), stroke_width=3,
-                                 stroke_fill=(0, 0, 0))
+    annotate(img, label, label_style)
     # compress_level=6 已能压得很小, optimize=True 会显著拖慢且收益有限
     img.save(out_path, format='PNG', compress_level=6)
 
@@ -347,14 +341,14 @@ DEFAULT_BATCH = 5          # 名字不是 前缀-序号 格式时的默认每区
 
 def split_groups(recs, batch_size):
     """按文件名前缀分组; 名字不是 前缀-序号 格式时退回每 batch_size 张一组"""
-    if not all(REGION_NAME_RE.match(r['name']) for r in recs):
+    if not all(REGION_NAME_RE.match(Path(r['name']).stem) for r in recs):
         batch_size = batch_size or DEFAULT_BATCH
         return [recs[i:i + batch_size] for i in range(0, len(recs), batch_size)]
 
     # 按首次出现顺序排列, 与 collect_files 的文件顺序一致
     groups = {}
     for r in recs:
-        groups.setdefault(REGION_NAME_RE.match(r['name']).group(1), []).append(r)
+        groups.setdefault(REGION_NAME_RE.match(Path(r['name']).stem).group(1), []).append(r)
     return list(groups.values())
 
 
@@ -404,7 +398,7 @@ def build_table(batches):
     return header, values, detail, batches, means, overall
 
 
-def write_xlsx(out_path: Path, header, values, detail, row_flags=None):
+def write_xlsx(out_path: Path, header, values, detail, row_flags=None, workbook=None):
     """
     写 Excel。
 
@@ -430,8 +424,10 @@ def write_xlsx(out_path: Path, header, values, detail, row_flags=None):
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
-    WB = Workbook()
-    ws = WB.active
+    WB = workbook if workbook is not None else Workbook()
+    if workbook is not None and '粗糙度分析' in WB.sheetnames:
+        del WB['粗糙度分析']
+    ws = WB.create_sheet('粗糙度分析',0) if workbook is not None else WB.active
     ws.title = '粗糙度分析'
 
     NUM_FMT = '0.000'
@@ -546,58 +542,13 @@ def write_xlsx(out_path: Path, header, values, detail, row_flags=None):
     # 冻结明细表头, 滚动时保持可见
     ws.freeze_panes = ws.cell(row=ROW_DET_HEAD + 1, column=1)
 
-    WB.save(out_path)
+    if out_path is not None:
+        WB.save(out_path)
+    return WB
 
 
-def close_open_workbook(path: Path) -> bool:
-    """
-    关掉正打开着该文件的 Excel / WPS 工作簿 (不保存), 返回是否找到并关闭。
-
-    只关闭这一个工作簿, 不退出 Excel, 也不影响用户其它窗口。
-    """
-    try:
-        import win32com.client
-    except ImportError:
-        return False
-
-    target = str(path.resolve()).lower()
-    for progid in ('Excel.Application', 'KET.Application'):
-        try:
-            app = win32com.client.GetActiveObject(progid)
-        except Exception:                                   # noqa: BLE001
-            continue
-        try:
-            for wb in list(app.Workbooks):
-                try:
-                    if str(Path(wb.FullName).resolve()).lower() == target:
-                        wb.Close(SaveChanges=False)
-                        return True
-                except Exception:                           # noqa: BLE001
-                    continue
-        except Exception:                                   # noqa: BLE001
-            continue
-    return False
 
 
-def write_xlsx_safely(out_path: Path, header, values, detail, row_flags=None) -> bool:
-    """写 Excel; 文件被 Excel 打开时先自动关闭该工作簿再重试"""
-    try:
-        write_xlsx(out_path, header, values, detail, row_flags)
-        return True
-    except PermissionError:
-        pass
-
-    if not close_open_workbook(out_path):
-        return False
-    print(f'  [提示] {out_path.name} 正被 Excel 打开, 已自动关闭该工作簿, 重新写入...')
-    for _ in range(10):                                    # 等 Excel 释放文件句柄
-        time.sleep(0.2)
-        try:
-            write_xlsx(out_path, header, values, detail, row_flags)
-            return True
-        except PermissionError:
-            continue
-    return False
 
 
 # ----------------------------------------------------------------------------
@@ -618,7 +569,7 @@ def collect_files(input_dir: Path):
 
 def ensure_bat_encoding() -> bool:
     """
-    确保同目录的 run_ra.bat 是 GBK 编码 + CRLF 换行, 需要时自动改写。
+    确保同目录的 run.bat 是 GBK 编码 + CRLF 换行, 需要时自动改写。
 
     为什么必须有这一步:
       1. cmd.exe 按系统 ANSI 码页 (本机 936/GBK) 解析 .bat。存成 UTF-8 时,
@@ -629,7 +580,7 @@ def ensure_bat_encoding() -> bool:
     每次运行自动检查, 只在确实需要时写盘。原先独立的 _to_gbk.py 已并入此处。
     返回是否做了修正。
     """
-    bat = Path(__file__).resolve().parent / 'run_ra.bat'
+    bat = Path(__file__).resolve().parent / 'run.bat'
     if not bat.exists():
         return False
 
@@ -653,203 +604,14 @@ def ensure_bat_encoding() -> bool:
 
     bat.write_bytes(fixed)
     src = 'UTF-8' if (is_utf8 and has_non_ascii) else '非标准换行/编码'
-    print(f'[提示] 已自动修正 run_ra.bat ({src} -> GBK + CRLF)')
+    print(f'[提示] 已自动修正 run.bat ({src} -> GBK + CRLF)')
     return True
 
 
 def main():
-    ap = argparse.ArgumentParser(description='从 Zygo 截图批量提取面粗糙度 Ra 并按区域平均')
-    here = Path(__file__).resolve().parent
-    ap.add_argument('--dir', default=None,
-                    help=f'输入目录 (默认: 脚本同级的 {INPUT_DIR} 文件夹)')
-    ap.add_argument('--out', default=None, help='输出目录 (默认: 脚本所在目录)')
-    ap.add_argument('--batch', type=int, default=None,
-                    help='每个区域取几张图 (5 = 只取序号 1~5); 不给则整个区域全读。'
-                        '文件名不是「前缀-序号」格式时, 作为分批张数 (默认 5)')
-    ap.add_argument('--no-plot', action='store_true', help='不导出三维表面图 PNG')
-    args = ap.parse_args()
-    if args.batch is not None and args.batch < 1:
-        ap.error('--batch 必须为正整数')
-
-    # 顺手保证启动器编码正确 (原 _to_gbk.py 的职责)
-    ensure_bat_encoding()
-
-    input_dir = Path(args.dir).resolve() if args.dir else here / INPUT_DIR
-    out_dir = Path(args.out).resolve() if args.out else here
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not input_dir.is_dir():
-        print(f'[错误] 找不到输入目录 {input_dir}\n'
-              f'       请把 Zygo 截图放进该文件夹, 或用 --dir 指定其它目录',
-              file=sys.stderr)
-        return 2
-
-    files = collect_files(input_dir)
-    if not files:
-        print(f'[错误] {input_dir} 下没有找到图片文件', file=sys.stderr)
-        return 2
-
-    print(f'输入目录: {input_dir}')
-    if all(REGION_NAME_RE.match(p.stem) for p in files):
-        n_file_all = len(files)
-        files = select_files(files, args.batch)
-        n_region = len({REGION_NAME_RE.match(p.stem).group(1) for p in files})
-        pick = f'每区只取序号 1~{args.batch} 张' if args.batch else '每区全部图片'
-        print(f'共 {n_file_all} 个文件, 按文件名前缀分 {n_region} 个区域, '
-              f'{pick} -> 实际读取 {len(files)} 个\n')
-    else:
-        batch = args.batch or DEFAULT_BATCH
-        n_batch = (len(files) + batch - 1) // batch
-        print(f'共 {len(files)} 个文件, 每区域 {batch} 张, 共 {n_batch} 个区域\n')
-
-    plot_dir = out_dir / PLOT_DIR
-    plot_done, plot_fail = [], []
-    if not args.no_plot:
-        plot_dir.mkdir(parents=True, exist_ok=True)
-
-    recs, ref_unit = [], None
-
-    def export_one(path: Path, label, stem=None):
-        """导出三维表面图; 目标 PNG 被占用或裁剪失败只告警, 不影响 Ra 提取"""
-        if args.no_plot:
-            return
-        stem = stem or path.stem
-        try:
-            export_plot(path, plot_dir / f'{stem}.png', label)
-            plot_done.append(stem)
-        except OSError as e:
-            # Windows 下目标 PNG 被看图程序占用时, Pillow 抛的是 EINVAL(22) 而非 EACCES
-            if e.errno in (13, 22):
-                plot_fail.append((path.name, '目标 PNG 正被其他程序打开'))
-            else:
-                plot_fail.append((path.name, str(e)))
-        except Exception as e:                               # noqa: BLE001
-            plot_fail.append((path.name, str(e)))
-
-    for p in files:
-        # 先做界面版本自检: 尺寸必须匹配, 否则直接跳过并说明原因
-        try:
-            with Image.open(p) as im:
-                size = im.size
-        except Exception as e:                                   # noqa: BLE001
-            print(f'[跳过] {p.name}: 图片无法读取 ({e})')
-            continue
-        if size != (IMG_W, IMG_H):
-            print(f'[跳过] {p.name}: 图像尺寸 {size[0]}x{size[1]} 与 Zygo 界面截图 '
-                  f'{IMG_W}x{IMG_H} 不符, 非本流程可处理的截图')
-            continue
-
-        try:
-            ra_txt, conf = read_number(p, ROW_RA)
-            pv_txt, _ = read_number(p, ROW_PV)
-            rms_txt, _ = read_number(p, ROW_RMS)
-            unit, unit_d = read_unit(p, ROW_RA)
-        except Exception as e:                                   # noqa: BLE001
-            print(f'[跳过] {p.name}: {e}')
-            export_one(p, None)                                  # Ra 未读出, 图仍导出但不标注
-            continue
-
-        if ref_unit is None:
-            ref_unit = unit
-        elif unit != ref_unit:
-            print(f'[警告] {p.name} 单位为 "{unit}", 与首张 "{ref_unit}" 不一致, 请确认界面版本')
-
-        try:
-            ra, pv, rms = float(ra_txt), float(pv_txt), float(rms_txt)
-        except ValueError:
-            print(f'[跳过] {p.name}: 未能识别出有效的 Ra 数值 '
-                  f'(读到 Ra="{ra_txt}", PV="{pv_txt}", rms="{rms_txt}"), '
-                  f'请确认截图包含 "Measure Controls" 面板')
-            export_one(p, None)
-            continue
-
-        # 置信度: 用"与次优模板的最小裕度"衡量判别清晰度。
-        # 样本集实测: 全部字形最佳距离为 0, 最小裕度 24 (出现在 0/8 之间), 判别无歧义。
-        worst_dist = max((c[1] for c in conf), default=0.0)
-        worst_margin = min((c[2] for c in conf), default=99.0)
-        recs.append({
-            'name': p.name, 'path': p, 'ra': ra, 'pv': pv, 'rms': rms,
-            'unit': unit,
-        })
-        flag = ''
-        if worst_dist > 40 or worst_margin < 10:
-            flag = '   [低置信, 建议与截图核对]'
-        print(f'  {p.name:<12} Ra = {ra:>9.3f} nm    PV = {pv:>11.3f}    rms = {rms:>8.3f}{flag}')
-
-    if not recs:
-        print('[错误] 没有成功提取到任何数据', file=sys.stderr)
-        return 3
-
-    header, values, detail, batches, means, overall = build_table(
-        split_groups(recs, args.batch))
-
-    # 代表图要等全部 Ra 算完才知道是哪张, 所以导出放到这里, 并直接带上 min / medoid 后缀
-    row_flags = [r['flags'] for r in recs]
-    for r in recs:
-        export_one(r['path'], f'Ra={r["ra"]:.3f} {r["unit"]}',
-                   tagged_stem(r['path'].stem, r['flags']))
-
-    # 代表图后缀会随数据变化 (上次的 _min 这次可能变成 _medoid), 所以 out/ 必须与本次产物
-    # 严格对齐: 删掉所有没写出来的旧 PNG, 否则会残留两个 _min 之类的旧图。
-    # 同时把代表图各复制一份到 out/min、out/medoid, 翻图时不用在几十张里挑。
-    if not args.no_plot:
-        keep = {f'{s}.png' for s in plot_done}
-        sub_keep = {d: set() for d in TAG_DIRS}
-        for r in recs:
-            name = f'{tagged_stem(r["path"].stem, r["flags"])}.png'
-            if name not in keep:
-                continue                     # 导出失败的不复制, 子文件夹里也不该有它
-            for d in TAG_DIRS:
-                if d in r['flags']:
-                    (plot_dir / d).mkdir(exist_ok=True)
-                    shutil.copyfile(plot_dir / name, plot_dir / d / name)
-                    sub_keep[d].add(name)
-
-        stuck = []
-        for folder, names in [(plot_dir, keep)] + [(plot_dir / d, sub_keep[d])
-                                                   for d in TAG_DIRS]:
-            for old in folder.glob('*.png'):
-                if old.name in names:
-                    continue
-                try:
-                    old.unlink()
-                except OSError:
-                    stuck.append(f'{folder.name}/{old.name}')   # 被看图软件占用时删不掉
-        if stuck:
-            print('[警告] 以下旧图删不掉 (可能正被看图软件打开), 会与本次结果混在一起, '
-                  '请关闭后重跑: ' + ', '.join(stuck), file=sys.stderr)
-
-    # 先把结果打到屏幕, 即使写盘失败用户也能看到数值
-    print('\n--- 粗糙度分析 (面粗糙度 Ra, nm) ---')
-    print('区域: ' + '  '.join(f'{i + 1}' for i in range(len(batches))))
-    print('均值: ' + '  '.join(f'{m:.3f}' for m in means))
-    print(f'总体均值: {overall:.3f} nm  (共 {len(recs)} 个文件)')
-    for i, b in enumerate(batches, start=1):
-        med = next(r for r in b if 'medoid' in r['flags'])
-        low = next(r for r in b if 'min' in r['flags'])
-        print(f'  区域{i}: medoid = {med["name"]} (Ra={med["ra"]:.3f})'
-              f'    min = {low["name"]} (Ra={low["ra"]:.3f})')
-
-    # 唯一产物: xlsx
-    xlsx_path = out_dir / 'ra_results.xlsx'
-    if not write_xlsx_safely(xlsx_path, header, values, detail, row_flags):
-        print(f'\n[错误] 无法写入 {xlsx_path.name} —— 该文件正被占用'
-              f'(已尝试自动关闭 Excel 工作簿, 仍失败)。\n'
-              f'       请手动关闭 Excel 后重新运行。',
-              file=sys.stderr)
-        return 4
-
-    print(f'\n已输出: {xlsx_path}')
-
-    if plot_done:
-        print(f'已导出三维表面图: {plot_dir}  ({len(plot_done)} 张 PNG)')
-        print('          ' + ', '.join(f'{n}.png' for n in plot_done[:10])
-              + (' ...' if len(plot_done) > 10 else ''))
-        print(f'代表图副本: {plot_dir / "min"} 与 {plot_dir / "medoid"}')
-    for name, why in plot_fail:
-        print(f'[警告] 三维表面图导出失败 {name}: {why}', file=sys.stderr)
-
-    return 0
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import ra_workflow
+    return ra_workflow.run(sys.modules[__name__])
 
 
 if __name__ == '__main__':

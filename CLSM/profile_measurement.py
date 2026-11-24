@@ -15,7 +15,7 @@ MIN_DEPTH_UM, MIN_SNR = 0.10, 5.0
 REFERENCES = (
     {"doi": "10.3390/ma16134761", "used_for": "沿槽长1/4、1/2、3/4多位置测量并平均"},
     {"doi": "10.1038/s41598-024-81233-0", "used_for": "从三维形貌提取平均剖面"},
-    {"doi": "10.1016/j.jmrt.2026.01.163", "used_for": "两侧表面到槽底的深度及CMP前后比较"},
+    {"doi": "10.1016/j.jmrt.2026.01.163", "used_for": "两侧表面与槽底的相对高度测量"},
     {"doi": "10.3390/ma16062536", "used_for": "体积/投影面积的等效深度概念；本项目仅输出截面A/W辅助指标"},
 )
 
@@ -118,6 +118,10 @@ def measure_strip(x, heights, missing, y0, dy, fit_baseline, opening_function,
     width = None if left is None or right is None else float((right-left)*dy)
     width_reason = opening["reason"]
     flags = []
+    for side in ("left", "right"):
+        wall = opening.get(side, {})
+        if wall.get("method") == "平台支撑的槽缘过渡括区":
+            flags.append(f"{side}槽缘由平台过渡区定位，位置不确定度{wall['uncertainty_px']:.2f}px；详见审计")
     for side in ("left","right"):
         if side not in opening:
             continue
@@ -152,6 +156,9 @@ def measure_strip(x, heights, missing, y0, dy, fit_baseline, opening_function,
                 baseline_um=base, residual_um=residual, smoothed_residual_um=smooth,
                 reference_mask=ref, noise_um=noise, center_drift_um=drift,
                 width_valid=width_valid, width_reason=width_reason, width_um=width,
+                opening_details=opening,
+                width_localization_uncertainty_um=(float((opening['left']['uncertainty_px']+
+                    opening['right']['uncertainty_px'])*dy) if width_valid else None),
                 left_open_px=left, right_open_px=right,
                 area_um2=area, equivalent_depth_um=equivalent, flags=flags)
 
@@ -167,7 +174,9 @@ def _summary(strips):
     return dict(n_planned=n,n_depth=len(depths),n_width=len(widths),
                 depth_mean_um=full(depths),depth_position_sd_um=float(np.std(depths,ddof=1)) if len(depths)==n and n>1 else None,
                 depth_partial_mean_um=float(np.mean(depths)) if depths else None,
-                width_mean_um=full(widths),area_mean_um2=full(areas),equivalent_depth_mean_um=full(eq))
+                width_mean_um=full(widths),area_mean_um2=full(areas),equivalent_depth_mean_um=full(eq),
+                width_partial_mean_um=float(np.mean(widths)) if widths else None,
+                width_position_sd_um=float(np.std(widths,ddof=1)) if len(widths)==n and n>1 else None)
 
 
 def analyse_profiles(r, fit_baseline, opening_function, strip_width_um=STRIP_WIDTH_UM,

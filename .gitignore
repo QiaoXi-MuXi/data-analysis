@@ -4,6 +4,12 @@ out/
 /Ra/ra_results.xlsx
 /Ra/surface_plots/
 
+# 按日期命名的原始采集目录（超景深、拉曼、纳米压痕等仪器原始文件）：只留本机。
+/20??-??-??/
+/20??????/
+*.wip
+*.mss
+
 # Python 缓存与临时文件。
 __pycache__/
 *.pyc
@@ -22,3 +28,11 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 ~$*
+
+# ER 本地生成结果。
+/ER/*.xlsx
+
+# CLSM 的生成工作簿和版本回退副本；保留本地文件。
+/CLSM/groove_results.xlsx
+/CLSM/groove_paper_results*.xlsx
+/CLSM/.backups/

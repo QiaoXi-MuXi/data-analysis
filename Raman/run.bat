@@ -16,41 +16,40 @@ set "XSHIFT=0"
 
 cd /d "%~dp0"
 
+rem 显式参数直接交给Python，支持--help及自定义输入输出。
+if not "%~1"=="" goto :cli
+
 if not exist "data" (
     echo   [错误] 找不到 data 文件夹
     echo          请把 txt 数据放进 data 文件夹后重试
     echo.
-    pause
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
     exit /b 1
 )
 
 set "DATA_N=0"
-for %%f in (data\*.txt) do set /a DATA_N+=1
+for %%f in (data\*.txt) do if exist "%%f" set /a DATA_N+=1
 if "%DATA_N%"=="0" (
     echo   [错误] data 文件夹里没有 txt 文件
     echo.
-    pause
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
     exit /b 1
 )
 
 rem ---- 便携 Python: 与本目录同级的 python\ 文件夹 (整个目录一起拷贝迁移) ----
 for %%i in ("%~dp0..\python\python.exe") do set "PY=%%~fi"
 if not exist "%PY%" (
-    rem 兜底: 便携版缺失时退回 PATH 里的 python
-    set "PY="
-    where python >nul 2>nul && set "PY=python"
-    if not defined PY (
-        echo   [错误] 没找到便携 Python: ..\python\python.exe  ^(PATH 里也没有 python^)
-        echo.
-        pause
-        exit /b 1
-    )
-    echo   [提示] 正在使用系统 Python: !PY!
+    echo [ERROR] Shared Python not found: "%PY%"
+    echo Keep the project and its python folder together.
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
+    exit /b 1
 )
 
 rem 只用本地临时态的包, 不加载用户 site-packages
 set "PYTHONNOUSERSITE=1"
+set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONPATH="
+set "PYTHONHOME="
 
 rem 依赖缺失由 plot_raman.py 自己报错 (少起一个解释器, 省 ~1 s)
 
@@ -61,7 +60,7 @@ rem ---- 默认区间: 取 data 里所有 txt 第一列的最小/最大值 ----
 rem 结果先落到临时文件再读: for /f 直接跑带引号的命令行会拆错参数
 set "DEF_XMIN="
 set "DEF_XMAX="
-set "RANGE_TMP=%TEMP%\raman_range.tmp"
+set "RANGE_TMP=%TEMP%\raman_range_%RANDOM%_%RANDOM%.tmp"
 "%PY%" -c "import sys,glob,numpy as np;d=sys.argv[1];b=[np.loadtxt(f,comments='#')[:,0] for f in glob.glob(d+'/*.txt')];print(round(min(a.min() for a in b),2),round(max(a.max() for a in b),2))" "%~dp0data" > "%RANGE_TMP%" 2>nul
 for /f "usebackq tokens=1,2" %%a in ("%RANGE_TMP%") do (
     set "DEF_XMIN=%%a"
@@ -91,7 +90,7 @@ echo   使用解释器: %PY%
 echo   正在出图 ...
 echo.
 
-"%PY%" "%~dp0plot_raman.py" --xmin !XMIN! --xmax !XMAX! --height !HEIGHT! --shift %XSHIFT%
+"%PY%" -B "%~dp0plot_raman.py" --xmin !XMIN! --xmax !XMAX! --height !HEIGHT! --shift %XSHIFT%
 goto :done
 
 rem ================= 堆叠模式 =================
@@ -103,7 +102,25 @@ echo   使用解释器: %PY%
 echo   正在出图 ...
 echo.
 
-"%PY%" "%~dp0plot_raman.py" --stack "%~dp0stack.xlsx"
+"%PY%" -B "%~dp0plot_raman.py" --stack "%~dp0stack.xlsx"
+
+goto :done
+
+:cli
+for %%i in ("%~dp0..\python\python.exe") do set "PY=%%~fi"
+if not exist "%PY%" (
+    echo [ERROR] Shared Python not found: "%PY%"
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
+    exit /b 1
+)
+set "PYTHONNOUSERSITE=1"
+set "PYTHONDONTWRITEBYTECODE=1"
+set "PYTHONPATH="
+set "PYTHONHOME="
+"%PY%" -B "%~dp0plot_raman.py" %*
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" if not defined DATA_ANALYSIS_NO_PAUSE pause
+exit /b %RC%
 
 :done
 set "RC=%errorlevel%"
@@ -114,14 +131,14 @@ if "%RC%"=="2" (
     echo          其余图片正常生成
     start "" "out"
     echo.
-    pause
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
     exit /b 2
 )
 if not "%RC%"=="0" (
     echo.
     echo   [错误] 出图失败，请检查上面的提示
     echo.
-    pause
+    if not defined DATA_ANALYSIS_NO_PAUSE pause
     exit /b 1
 )
 
