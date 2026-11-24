@@ -13,7 +13,7 @@ POSITION_ALIASES = {'上中': '上方中间', '中上': '上方中间', '上方�
                     '底部': '下方中间', '底部居中': '下方中间', '底部中间': '下方中间'}
 DEFAULTS = dict(label_size=44, label_color='#FFFFFF', label_position='左上',
                 label_stroke=3, label_stroke_color='#000000')
-EDGE_X, EDGE_Y = 10, 4  # 贴边留白：四角位置的水平边距与上/下边距（像素）
+EDGE_X, EDGE_TOP, EDGE_BOTTOM = 10, 4, 10  # 贴边留白：左右边距与上、下边距（像素）
 MIN_SIZE = 8            # 与配置列的下限一致，字宽超限时不小于该值
 
 
@@ -93,9 +93,9 @@ def annotate(image, text, style=None):
             face = font(size)
             box = draw.textbbox((0, 0), text, font=face, stroke_width=stroke)
     position = style['label_position']
-    x, y = EDGE_X, EDGE_Y
+    x, y = EDGE_X, EDGE_TOP
     if '下' in position:
-        y = max(0, image.height - EDGE_Y - box[3])
+        y = max(0, image.height - EDGE_BOTTOM - box[3])
     if '右' in position:
         x = max(0, image.width - EDGE_X - box[2])
     elif '中' in position:

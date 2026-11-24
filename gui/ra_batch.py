@@ -108,11 +108,18 @@ class LabelPreview(QWidget):
         painter.translate((self.width()-602*scale)/2, (self.height()-325*scale)/2)
         painter.scale(scale, scale)
         font = QFont('Microsoft YaHei')
-        font.setPixelSize(style.get('label_size') or 44)
         font.setBold(True)
-        path = QPainterPath()
-        path.addText(0, 0, font, self.sample_text)
-        box = path.boundingRect()
+        size = style.get('label_size') or 44
+        available = 602-20
+        # 与出图引擎一致：字号超出左右留白时收敛到能完整放下的最大字号。
+        while True:
+            font.setPixelSize(size)
+            path = QPainterPath()
+            path.addText(0, 0, font, self.sample_text)
+            box = path.boundingRect()
+            if box.width() <= available or size <= 8:
+                break
+            size = max(8, min(size-1, int(size*available/box.width())))
         position = style.get('label_position') or '左上'
         if position.startswith('右'):
             x = 602-10-box.right()

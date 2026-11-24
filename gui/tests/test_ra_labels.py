@@ -269,5 +269,30 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(images['four_panel'].tobytes(), explicit_off['four_panel'].tobytes())
 
 
+    def test_center_positions_and_large_font_stay_inside_plot(self):
+        width, height = 602, 325
+        for position, expected in [('上方中间', '上方中间'), ('下方中间', '下方中间'),
+                                   ('上中', '上方中间'), ('顶部居中', '上方中间')]:
+            self.assertEqual(plot_labels.settings({'label_position': position})['label_position'], expected)
+        for position in ('上方中间', '下方中间'):
+            for size in (8, 44, 96):
+                with self.subTest(position=position, size=size):
+                    image = Image.new('RGB', (width, height))
+                    plot_labels.annotate(image, 'Sa=123.456 nm',
+                                         {'label_position': position, 'label_size': size})
+                    ink = np.asarray(image)[:, :, 0] > 0
+                    yy, xx = np.nonzero(ink)
+                    self.assertGreaterEqual(xx.min(), 0)
+                    self.assertLessEqual(xx.max(), width - 1)
+                    self.assertGreaterEqual(yy.min(), 0)
+                    self.assertLessEqual(yy.max(), height - 1)
+                    self.assertLessEqual(xx.max() - xx.min() + 1, width - 2 * 10)
+                    self.assertLessEqual(abs((xx.min() + xx.max()) / 2 - (width - 1) / 2), 1.5)
+                    if position == '上方中间':
+                        self.assertLessEqual(yy.min(), 60)
+                    else:
+                        self.assertGreaterEqual(yy.max(), 260)
+
+
 if __name__ == '__main__':
     unittest.main()
