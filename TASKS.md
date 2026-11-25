@@ -1,4 +1,4 @@
-# Raman 基准对比分析模式实施任务（2026-11-24）
+﻿# Raman 基准对比分析模式实施任务（2026-11-24）
 
 > 当前状态：**P0 已实施并完成隔离验收**。单谱、堆叠模式保持原输出；基准对比已接入 CLI 与桌面 GUI。`compare.xlsx` 目前仍是空模板，尚未用用户真实基准谱/样品谱运行。
 >
@@ -1580,3 +1580,14 @@ Nano 已有 Excel 全局设置和出版物风格，后续重点是运行反馈�
 - 解压到全新目录（路径含空格）后 `check.bat --no-pause` 报告 0 项错误；`run_gui.bat --check` 返回 0 并写出 `out\gui\startup_check.log`；`Raman\run.bat` 报错由“找不到 data 文件夹”变为“data 文件夹里没有 txt 文件”，提示输入位置。
 
 限制：`data/` 为空时各模块仍按原有规则拒绝运行并提示放数据，属预期行为；顶层目录名由 `package.bat` 中 `PKGNAME` 一行控制，改名后需重新打包，已是项目根的旧压缩包不受影响。
+
+## 仓库公开与历史清理（2026-11-25）
+
+- 公开前核验：工作区文本未发现访问令牌、私钥、邮箱或个人证件号；仅有 `E:\study\data analysis` 这类项目自身绝对路径（文档示例与 Ra/ER 配置中的本机输入路径），无用户名或账号信息。
+- 历史清理：用 `git filter-branch` 重写 9 个提交，删除 `CLSM/results/`（234 个实测对象，最大为 28 MB 的 `paper_profile_audit.json`）、`CLSM/reports/`（17 份复核报告与示意图）、`sci-pic/previews/references/`（3 张第三方参考图，含 GaN_Liu 期刊插图）、`CLSM/groove_results.xlsx` 与 `Nanoindentation Analysis/config_ready.xlsx`；重写后强推 `main`。
+- 本机归档：上述报告、参考图与重写前完整历史 bundle（379 MB）保存在 `.local-archive/`，已加入 `.gitignore`，不随仓库公开。
+- 新增忽略规则：`/.acl-recovery/`（权限恢复记录）、`/_batch_display_*/`（批量试算输出）、`*.bak` / `*.bak_*`（旧启动器与配置备份）、`/.local-archive/`、`/DataAnalysis_*.zip`。
+- `CLSM/README.md` 的 `reports/` 说明改为“本机保留、不入库”，避免公开后指向不存在文件。
+- 可见性：`gh repo edit --visibility public` 已生效，未登录访问 raw README 返回 200。
+- 已知限制：`python/` 便携运行时仍在版本库内（远程约 197 MB），其中 `python/Lib/site-packages/cv2/cv2.pyd` 为 82 MB，超过 GitHub 50 MB 推荐值，clone 较慢；如需瘦身可改为 requirements + Release 附件。
+- 历史清理后全部提交哈希已改变；旧提交仍可能凭已知哈希从 GitHub 直接访问，直至平台回收，且先前克隆或 fork 的副本不受影响。

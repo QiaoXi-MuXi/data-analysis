@@ -62,7 +62,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] 正在推送到 GitHub 私有仓库...
+echo [3/3] 正在推送到 GitHub 仓库...
 git push origin main
 if errorlevel 1 goto push_error
 echo.

@@ -1,4 +1,4 @@
-# Data Analysis
+﻿# Data Analysis
 
 Windows 下的实验数据处理工具，包含 Zygo 面粗糙度 Ra 提取、Raman 光谱绘图（单谱/堆叠/拼图/基准对比）与 CLSM 槽宽/槽深测量。
 
@@ -84,7 +84,7 @@ Git 不记录空目录；只有 `data/` 和 `out/` 的模块不会出现在仓�
 
 ## 一键同步到 GitHub
 
-双击项目根目录的 `sync_github.bat`，自动暂存改动、生成带时间的提交并推送到本私有仓库。没有文件改动时跳过提交，仍会推送此前尚未上传的提交。完成或失败都会停留显示结果。
+双击项目根目录的 `sync_github.bat`，自动暂存改动、生成带时间的提交并推送到本公开仓库。没有文件改动时跳过提交，仍会推送此前尚未上传的提交。完成或失败都会停留显示结果。
 
 - 需要已安装 Git、GitHub CLI，并通过 `gh auth login` 登录。
 - 只在本仓库的 `main` 分支运行，目标固定为 `QiaoXi-MuXi/data-analysis`。
