@@ -1,4 +1,4 @@
-# CLSM 槽宽与槽深批量分析（paper-v5-local）
+﻿# CLSM 槽宽与槽深批量分析（paper-v5-local）
 
 ## 快速使用
 
@@ -10,7 +10,7 @@
 | 输出 | `out/results/groove_paper_results.xlsx`、`out/paper_v5/`、`out/figures/2D/`、`out/figures/3D/`。默认启动会清理 `out/` 下本次结果（`out/runs/` 历史归档保留），重要结果请事先另存。 |
 | 环境检查 | 运行根目录 `check.bat`；使用共享 `../python/python.exe`，不回退系统 Python。 |
 
-根目录只保留代码、`run.bat`、`README.md`、`TASKS.md` 与高度确认配置 `lsm_height_calibration.json`。所有生成结果统一放在 `out/` 的二级子目录下：`out/results/` 存结果工作簿，`out/paper_v5/` 存论文级图表与审计 JSON，`out/figures/` 存 2D/3D 形貌与剖面图及清单，`out/runs/` 存历史独立结果目录（沿用 `results_*` 目录名）；review/verification 报告与示意图在 `reports/`；`.backups/` 为修改前历史备份。`data/` 与 `out/` 均不纳入版本控制，本机保留。
+根目录只保留代码、`run.bat`、`README.md`、`TASKS.md` 与高度确认配置 `lsm_height_calibration.json`。所有生成结果统一放在 `out/` 的二级子目录下：`out/results/` 存结果工作簿，`out/paper_v5/` 存论文级图表与审计 JSON，`out/figures/` 存 2D/3D 形貌与剖面图及清单，`out/runs/` 存历史独立结果目录（沿用 `results_*` 目录名）；review/verification 报告与示意图放在本机 `reports/`（与 `data/`、`out/` 一样只留本机、不纳入版本控制）；`.backups/` 为修改前历史备份。
 
 命令行无人值守运行可在当前 PowerShell 设置 `$env:DATA_ANALYSIS_NO_PAUSE='1'`，使失败时直接返回退出码；该设置不取消 Raman 无参数单谱模式的输入提示。检查后可用 `Remove-Item Env:DATA_ANALYSIS_NO_PAUSE` 移除。原始输入及现有输出位置保持原有约定。
 
@@ -185,7 +185,7 @@ TXT输入文件没有Y标定，默认按X中位步长假定，本批约0.63µm�
 ..\python\python.exe -B .\inspect_zen_lsm.py "原始350.lsm完整路径" --out out\lsm_source_check_new --compare-txt data\350.txt
 ```
 
-输出目录必须尚不存在，避免覆盖结果。独立检查工具导出原始数组 NPZ、元数据 JSON 和对照图；不替换 TXT，不更新测量 Excel。高度图存储值及原始换算字段分别保留，尚未核实的高度单位/方向不自动推断。详见 `reports/lsm_source_review_20261030.md`。本批7份的实际 X/Y 间距均为 0.6251697265622246 µm；正式分析入口现已按每份LSM自身元数据读取步距，TXT仍沿用原规则。批处理的既有清理会删除 `out/` 下的这些结果，需要长期保留时请复制到 `out/runs/` 或 `out/` 之外。
+输出目录必须尚不存在，避免覆盖结果。独立检查工具导出原始数组 NPZ、元数据 JSON 和对照图；不替换 TXT，不更新测量 Excel。高度图存储值及原始换算字段分别保留，尚未核实的高度单位/方向不自动推断。详细审阅报告只保存在本机 `reports/`，不随仓库分发。本批7份的实际 X/Y 间距均为 0.6251697265622246 µm；正式分析入口现已按每份LSM自身元数据读取步距，TXT仍沿用原规则。批处理的既有清理会删除 `out/` 下的这些结果，需要长期保留时请复制到 `out/runs/` 或 `out/` 之外。
 
 
 ## 2026-11-02 斜直槽校正版本

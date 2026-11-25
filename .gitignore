@@ -49,3 +49,6 @@ Desktop.ini
 /CLSM/groove_results.xlsx
 /CLSM/groove_paper_results*.xlsx
 /CLSM/.backups/
+
+# 本机私有归档：历史备份、审阅报告与第三方参考图，不进入版本库也不公开。
+/.local-archive/
