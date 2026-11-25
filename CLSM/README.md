@@ -4,7 +4,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| 输入 | `data/` 内 TXT 或已提供外部高度标定的 LSM，同名 TXT 优先。 |
+| 输入 | `data/` 内 TXT 或已提供外部高度标定的 LSM，同名 TXT 优先；自动发现按文件名自然排序（`2-1` 在 `10-1` 前）。 |
 | 配置 | 命令行参数及本目录 `lsm_height_calibration.json`；LSM 换算须确认，默认跳过不可处理输入并记录原因。 |
 | 运行 | 双击本目录唯一的 `run.bat`，参数原样传递。 |
 | 输出 | `out/results/groove_paper_results.xlsx`、`out/paper_v5/`、`out/figures/2D/`、`out/figures/3D/`。默认启动会清理 `out/` 下本次结果（`out/runs/` 历史归档保留），重要结果请事先另存。 |
@@ -117,7 +117,7 @@ LSM三维形貌的显示夸张倍数上限仍为30；为避免深扫描把XY压�
 
 ## Excel 与不同文件数量
 
-默认写入 `out/results/groove_paper_results.xlsx`；本次为保留旧表，另交付 `out/results/groove_paper_results_v5.xlsx`。以后关闭占用表格再运行批处理即可生成默认文件。若文件被占用，明确报错，不报告保存成功。
+默认写入 `out/results/groove_paper_results.xlsx`；本次为保留旧表，另交付 `out/results/groove_paper_results_v5.xlsx`。以后关闭占用表格再运行批处理即可生成默认文件。运行前会先检查结果工作簿是否可写：若被 Excel / WPS 占用，立即明确报错并以退出码 4 停止，不先清理 `out`；写入阶段再失败时同样明确报错，不报告保存成功。
 
 - `核心结论`：按实际成功文件数逐行生成；槽深/槽宽均值和SD、筛查前均值、入选/计划数及状态。冻结表头并提供筛选；打印重复表头且纵向自动分页，不再强压所有文件到一页。
 - `槽宽槽深汇总`：按实际文件数扩展列，跨样品平均公式使用实际末列，支持超过Z列。主指标与旧逐列对照、固定25/50/75%对照分别标注。

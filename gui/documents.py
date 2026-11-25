@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import uuid
 
@@ -53,6 +54,15 @@ RA_HEADERS = ['文件', '启用(0/1)', '区域', '输出名', 'DAT去噪(0/1)', 
 RA_KEYS = ['file', 'enabled', 'region', 'stem', 'noise', 'high', 'cutoff', 'combined', 'single', 'label_enabled', 'label_size', 'label_color', 'label_position', 'label_stroke', 'label_stroke_color']
 RAMAN_HEADERS = ['文件', '图例名称', '归一化(0/1)', '标注峰位(0/1)', '峰高阈值', '纵向偏移', '区间下限', '区间上限']
 RAMAN_KEYS = ['file', 'label', 'normalize', 'peaks', 'height', 'offset', 'xmin', 'xmax']
+COMPARE_HEADERS = ['文件', '图例名称', '启用(0/1)', '峰高阈值', '标注峰位(0/1)']
+COMPARE_KEYS = ['file', 'label', 'enabled', 'height', 'peaks']
+COMPARE_PARAMETERS = {
+    '基准文件': 'reference', '基准名称': 'reference_label',
+    '基准峰高阈值': 'reference_height', '区间下限': 'xmin',
+    '区间上限': 'xmax', '匹配容差': 'tolerance',
+    '归一化(0/1)': 'normalize', '峰位校正': 'shift',
+    '激光线排除半宽': 'zero_guard',
+}
 ALIASES = {
     'Ra': {'file': ['文件', 'file', '源文件'], 'enabled': ['启用', 'enabled', 'enable', '参与分析'],
            'region': ['区域', '分组', 'region', 'group', '区域/分组'], 'stem': ['输出名', '输出名称', 'stem'],
@@ -71,7 +81,7 @@ ALIASES = {
               'offset': ['纵向偏移', '偏移', 'offset'], 'xmin': ['区间下限', '起点', 'xmin', '区间下限/cm⁻¹'],
               'xmax': ['区间上限', '终点', 'xmax', '区间上限/cm⁻¹']},
 }
-PATH_OPTIONS = {'input', 'output', 'config', 'template', 'xlsx'}
+PATH_OPTIONS = {'input', 'output', 'config', 'template', 'xlsx', 'compare_reference'}
 
 
 def normalize(value):
@@ -142,20 +152,116 @@ def json_value(value):
     return str(value)
 
 
+def compare_mode(options):
+    return options.get('mode') == 'compare'
+
+
+def _compare_config_api():
+    import importlib.util
+    script = Path(__file__).resolve().parent.parent / 'Raman' / 'compare_config.py'
+    if not script.is_file():
+        raise ValueError(f'基准对比模块不存在：{script}')
+    name = '_gui_raman_compare_config'
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, script)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
+def _compare_parameters(options, reference):
+    return {
+        '基准文件': reference,
+        '基准名称': options.get('reference_label', ''),
+        '基准峰高阈值': options.get('reference_height', ''),
+        '区间下限': options.get('xmin', ''),
+        '区间上限': options.get('xmax', ''),
+        '匹配容差': options.get('compare_tolerance', '10') or '10',
+        '归一化(0/1)': '1' if options.get('compare_normalize', True) else '0',
+        '峰位校正': options.get('shift', '0') or '0',
+        '激光线排除半宽': options.get('zero_guard', '50') or '50',
+    }
+
+
+def compare_reference_path(doc, options=None):
+    options = options or doc.options
+    text = str(options.get('compare_reference') or '').strip()
+    if not text:
+        raise ValueError('请选择基准光谱 TXT 文件')
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = Path(doc.base) / path
+    if not path.exists() and path.suffix.casefold() != '.txt':
+        path = Path(str(path) + '.txt')
+    return path.resolve()
+
+
+def _compare_options_from_workbook(wb, path):
+    if '参数' not in wb.sheetnames:
+        raise ValueError('基准对比配置缺少“参数”工作表')
+    ws = wb['参数']
+    rows = list(ws.iter_rows(values_only=True))
+    lookup = {normalize(name): key for name, key in COMPARE_PARAMETERS.items()}
+    params = {}
+    for row in rows[1:]:
+        if row is None or not any(value not in (None, '') for value in row):
+            continue
+        name = str(row[0] or '').strip()
+        if name.startswith('#'):
+            continue
+        key = lookup.get(normalize(name))
+        if key is None:
+            raise ValueError(f'对比配置包含未知参数：{name}')
+        if key in params:
+            raise ValueError(f'对比配置参数重复：{name}')
+        params[key] = '' if len(row) < 2 or row[1] is None else str(row[1]).strip()
+    reference = params.get('reference', '')
+    reference_value = ''
+    if reference:
+        candidate = Path(reference).expanduser()
+        if not candidate.is_absolute():
+            candidate = path.parent / candidate
+        if not candidate.exists() and candidate.suffix.casefold() != '.txt':
+            candidate = Path(str(candidate) + '.txt')
+        reference_value = str(candidate.resolve())
+    options = {
+        'mode': 'compare',
+        'config': str(path),
+        'compare_reference': reference_value,
+        'reference_label': params.get('reference_label', ''),
+        'reference_height': params.get('reference_height', ''),
+        'xmin': params.get('xmin', ''),
+        'xmax': params.get('xmax', ''),
+        'compare_tolerance': params.get('tolerance', '10') or '10',
+        'compare_normalize': flag(params.get('normalize'), True),
+        'shift': params.get('shift', '0') or '0',
+        'zero_guard': params.get('zero_guard', '50') or '50',
+    }
+    return options, params
+
+
 def validate_options(module, options):
     if 'no_plot' in options and not isinstance(options['no_plot'], bool):
         raise ValueError('“只计算不出图”需要布尔开关')
     for key in PATH_OPTIONS:
         if key in options and not isinstance(options[key], str):
             raise ValueError(f'{key} 路径需要文字')
-    choices = {'mode': ('config', 'directory') if module in ('Ra', 'Raman') else ('default',),
+    modes = ('config', 'directory', 'compare') if module == 'Raman' else (
+        'config', 'directory') if module == 'Ra' else ('default',)
+    choices = {'mode': modes,
                'types': ('all', 'bmp', 'dat'), 'input_format': ('auto', 'txt', 'lsm'),
                'lsm_mode': ('require-calibration', 'metadata-pending')}
     for key, allowed in choices.items():
         if key in options and options[key] not in allowed:
             raise ValueError(f'{key} 参数不支持：{options[key]}')
     numeric = {'Ra': {'batch': ('每组数量', 'integer')},
-               'Raman': {'xmin': ('区间下限', 'number'), 'xmax': ('区间上限', 'number'), 'height': ('峰高阈值', 'number'), 'shift': ('峰位校正', 'number')},
+               'Raman': {'xmin': ('区间下限', 'number'), 'xmax': ('区间上限', 'number'),
+                         'height': ('峰高阈值', 'number'), 'shift': ('峰位校正', 'number'),
+                         'reference_height': ('基准峰高阈值', 'number'),
+                         'compare_tolerance': ('匹配容差', 'number'),
+                         'zero_guard': ('激光线排除半宽', 'number')},
                'CLSM': {'count': ('分区数', 'integer'), 'strip': ('条带宽度', 'positive'), 'seed': ('随机种子', 'seed'),
                         'attempts': ('候选次数', 'integer'), 'dy': ('Y步距', 'positive'), 'scale': ('高度比例', 'scale'), 'offset': ('高度偏移', 'number')}, 'ER': {}}
     for key, (title, kind) in numeric[module].items():
@@ -171,6 +277,18 @@ def validate_options(module, options):
         lower, upper = options.get('xmin', ''), options.get('xmax', '')
         if bool(lower) != bool(upper) or (lower and float(lower) >= float(upper)):
             raise ValueError('运行设置中的区间需同时填写上下限，且下限小于上限')
+        if compare_mode(options):
+            if not isinstance(options.get('compare_normalize', True), bool):
+                raise ValueError('对比归一化需要布尔开关')
+            tolerance = options.get('compare_tolerance', '')
+            if str(tolerance).strip() and float(tolerance) <= 0:
+                raise ValueError('匹配容差必须大于 0')
+            guard = options.get('zero_guard', '')
+            if str(guard).strip() and float(guard) < 0:
+                raise ValueError('激光线排除半宽不能小于 0')
+            height = options.get('reference_height', '')
+            if str(height).strip() and float(height) < 0:
+                raise ValueError('基准峰高阈值不能小于 0')
 
 
 def atomic_write(path, data, expected=None, *, backup=True):
@@ -283,6 +401,7 @@ def read_exchange(path, module, base=None):
     if module not in ALIASES:
         raise ValueError('本模块请打开 JSON 项目文件')
     lookup = {normalize(alias): key for key, aliases in ALIASES[module].items() for alias in aliases}
+    compare_options = None
     if path.suffix.casefold() == '.xlsx':
         import openpyxl
         wb = openpyxl.load_workbook(path, read_only=True, data_only=False)
@@ -293,6 +412,9 @@ def read_exchange(path, module, base=None):
             raw = [[json_value(cell.value) for cell in row] for row in ws.iter_rows()]
             metadata = {'imported_from': path.name, 'source_digest': digest(path), 'sheets': wb.sheetnames,
                         'source_sheet': ws.title}
+            if module == 'Raman' and '参数' in wb.sheetnames:
+                compare_options, compare_params = _compare_options_from_workbook(wb, path)
+                metadata['compare_parameters'] = compare_params
         finally:
             wb.close()
     elif path.suffix.casefold() == '.csv':
@@ -347,7 +469,8 @@ def read_exchange(path, module, base=None):
             raise ValueError('配置超过 20000 行')
     metadata['unmapped_rows'] = ignored
     metadata['source_headers'] = header
-    return Document(module, Path(base or path.parent).resolve(), rows, metadata=metadata)
+    return Document(module, Path(base or path.parent).resolve(), rows,
+                    compare_options or {}, metadata)
 
 
 def resolve_source(doc, row, options=None):
@@ -380,6 +503,8 @@ class Problem:
 
 def inspect_document(doc, *, check_files=False, options=None):
     """一次收集各行问题；保存与运行共享规则，缺失文件仅阻止运行。"""
+    options = options or doc.options
+    mode = options.get('mode', 'config')
     schema = SCHEMAS.get(doc.module)
     if schema is None:
         return [], [Problem(None, None, '未知的分析模块')]
@@ -420,11 +545,12 @@ def inspect_document(doc, *, check_files=False, options=None):
                 if source.suffix.casefold() != '.txt':
                     raise ValueError('Raman 输入需要 TXT 光谱')
                 output = ('txt', re.sub(r'[<>:"/\\|?*]', '_', source.stem).casefold())
-                normalized.add(flag(values.get('normalize'), False))
-                if lower is None and values.get('xmin') is not None:
-                    lower = values['xmin']
-                if upper is None and values.get('xmax') is not None:
-                    upper = values['xmax']
+                if mode != 'compare':
+                    normalized.add(flag(values.get('normalize'), False))
+                    if lower is None and values.get('xmin') is not None:
+                        lower = values['xmin']
+                    if upper is None and values.get('xmax') is not None:
+                        upper = values['xmax']
             if output in outputs:
                 field = 'stem' if doc.module == 'Ra' else 'file'
                 raise ValueError('启用样本的输出文件名重复')
@@ -434,17 +560,27 @@ def inspect_document(doc, *, check_files=False, options=None):
             active.append((values, source))
         except (ValueError, TypeError, OSError) as exc:
             problems.append(Problem(index, field, str(exc)))
-    if len(normalized) > 1:
+    if normalized and len(normalized) > 1:
         problems.append(Problem(None, 'normalize', 'Raman 启用行的归一化方式必须一致'))
-    if (lower is None) != (upper is None) or (lower is not None and lower >= upper):
+    if mode != 'compare' and ((lower is None) != (upper is None) or (lower is not None and lower >= upper)):
         problems.append(Problem(None, 'xmin', 'Raman 共享区间需同时有上下限，且下限小于上限'))
+    if doc.module == 'Raman' and mode == 'compare':
+        try:
+            reference = compare_reference_path(doc, options)
+            if reference.suffix.casefold() != '.txt':
+                problems.append(Problem(None, 'compare_reference', '基准光谱需要 TXT 文件', False))
+            elif check_files and not reference.is_file():
+                problems.append(Problem(None, 'compare_reference',
+                                        f'基准文件不存在：{reference}', False))
+        except ValueError as exc:
+            problems.append(Problem(None, 'compare_reference', str(exc), False))
     if schema and not active and not problems:
         problems.append(Problem(None, 'enabled', '请至少启用一个样本', False))
     return active, problems
 
 
 def readiness(doc):
-    _, problems = inspect_document(doc, check_files=True)
+    _, problems = inspect_document(doc, check_files=True, options=doc.options)
     try:
         validate_options(doc.module, doc.options)
     except (ValueError, TypeError) as exc:
@@ -463,6 +599,22 @@ def validate(doc, *, for_run=False, options=None):
 def write_snapshot_xlsx(doc, options, path):
     import openpyxl
     active = validate(doc, for_run=True, options=options)
+    if doc.module == 'Raman' and compare_mode(options):
+        validate_options(doc.module, options)
+        api = _compare_config_api()
+        reference = compare_reference_path(doc, options)
+        samples = [api.CompareSample(
+            str(source), str(values.get('label') or ''), True,
+            values.get('height'), flag(values.get('peaks'), True))
+            for values, source in active]
+        api.write_compare_workbook(path, samples,
+                                   _compare_parameters(options, str(reference)),
+                                   overwrite=True)
+        sources = []
+        for candidate in [reference, *[source for _values, source in active]]:
+            if candidate not in sources:
+                sources.append(candidate)
+        return sources
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '配置'
@@ -501,6 +653,23 @@ def export_xlsx(doc, destination):
     path = Path(destination)
     if path.suffix.casefold() != '.xlsx':
         raise ValueError('Excel 配置请使用 .xlsx 扩展名')
+    if doc.module == 'Raman' and compare_mode(doc.options):
+        validate_options(doc.module, doc.options)
+        api = _compare_config_api()
+        samples = []
+        for row in doc.rows:
+            source = resolve_source(doc, row)
+            samples.append(api.CompareSample(
+                str(source), str(row.get('label') or ''), flag(row.get('enabled'), True),
+                parse_value(Column('height', '峰高阈值', 'number'), row.get('height')),
+                flag(row.get('peaks'), True)))
+        try:
+            reference = str(compare_reference_path(doc, doc.options))
+        except ValueError:
+            reference = str(doc.options.get('compare_reference') or '')
+        api.write_compare_workbook(path, samples,
+                                   _compare_parameters(doc.options, reference))
+        return
     keys = RA_KEYS if doc.module == 'Ra' else ['enabled', *RAMAN_KEYS]
     headers = RA_HEADERS if doc.module == 'Ra' else ['启用(0/1)', *RAMAN_HEADERS]
     wb = openpyxl.Workbook()

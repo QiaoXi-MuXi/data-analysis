@@ -397,20 +397,7 @@ def write_outputs(analysis, out, want_plots=True):
     if want_plots:
         cfg = analysis["cfg"]
         plots.init_style(cfg)
-        figs += plots.plot_test_deviation(analysis, cfg, fig_dir)
-        figs += plots.plot_test_merge_overview(analysis, cfg, fig_dir)
-        figs += plots.plot_merged_curves(analysis, cfg, fig_dir)
-        figs += plots.plot_group_compare(analysis, cfg, fig_dir)
-        figs += plots.plot_grouped_bar(analysis, cfg, fig_dir)
-        figs += plots.plot_paired(analysis, cfg, fig_dir)
-        figs += plots.plot_population_split(analysis, cfg, fig_dir)
-        figs += plots.plot_qc(analysis["files"], cfg, fig_dir)
-        # 先出总图，再出每个样品编号、每个文件各自的图
-        figs += plots.plot_overview(analysis, cfg, fig_dir)
-        figs += plots.plot_curves_overlay_numbered(analysis, cfg, fig_dir)
-        figs += plots.plot_per_sample(analysis, cfg, fig_dir)
-        figs += plots.plot_per_file(analysis, cfg, fig_dir)
-        plots.write_figure_index(figs, fig_dir)
+        figs += plots.generate_publication_figures(analysis, cfg, fig_dir)
     return figs
 
 
@@ -546,7 +533,7 @@ def write_report_md(a, path):
     if a["cfg"].get("配置文件"):
         L.append(f"- 用户配置：`{a['cfg']['配置文件']}`（图例名称、样品编号、测点、参与开关由此表设置）")
     L.append(f"- 数据规模：{len(a['files'])} 个文件，{sum(f['n'] for f in a['files'])} 次有效压痕")
-    L.append("- 图片索引：`out/figures/index.md`（总图、每个样品编号、每个文件）")
+    L.append("- 图片索引：`out/figures/index.md`（主图/补充图/保留图与单文件图）")
     L.append("")
     head("数据口径")
     L.append("- 弹性模量 E、硬度 H 取仪器 Results 表在最大载荷处的计算结果；使用同一针尖标定（面积系数一致），可直接横向比较。")

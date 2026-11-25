@@ -11,7 +11,7 @@ rem
 rem  成功后窗口自动关闭；只有出错时才停下等按键
 rem ============================================================
 
-set "HEIGHT=5"
+set "HEIGHT="
 set "XSHIFT=0"
 
 cd /d "%~dp0"
@@ -78,19 +78,21 @@ echo.
 echo   找到 %DATA_N% 个 txt 文件，直接回车使用默认值
 call :ask XMIN "区间左边界 cm-1" !DEF_XMIN!
 call :ask XMAX "区间右边界 cm-1" !DEF_XMAX!
-call :ask HEIGHT "峰高阈值 H" !HEIGHT!
+call :ask HEIGHT "标峰阈值 H（回车=自适应）" !HEIGHT!
 
 echo.
 echo   Raman 出图参数
 echo   区间    !XMIN! - !XMAX! cm-1
-echo   峰高    H = !HEIGHT! counts
+if defined HEIGHT (echo   峰高    H = !HEIGHT! counts) else (echo   峰高    H = 自适应)
 echo   峰位校正 %XSHIFT% cm-1
 echo.
 echo   使用解释器: %PY%
 echo   正在出图 ...
 echo.
 
-"%PY%" -B "%~dp0plot_raman.py" --xmin !XMIN! --xmax !XMAX! --height !HEIGHT! --shift %XSHIFT%
+set "HOPT="
+if defined HEIGHT set "HOPT=--height !HEIGHT!"
+"%PY%" -B "%~dp0plot_raman.py" --xmin !XMIN! --xmax !XMAX! !HOPT! --shift %XSHIFT%
 goto :done
 
 rem ================= 堆叠模式 =================
@@ -150,7 +152,9 @@ exit /b 0
 rem ---- 子程序: 读一项参数, 空输入或纯空格则用默认值 ----
 :ask
 set "IN="
-set /p "IN=  %~2 [默认 %~3]: "
+set "DEFTXT="
+if not "%~3"=="" set "DEFTXT= [默认 %~3]"
+set /p "IN=  %~2!DEFTXT!: "
 if defined IN set "IN=%IN: =%"
 if not defined IN set "IN=%~3"
 set "%~1=%IN%"

@@ -60,13 +60,26 @@ def parse_filename(name: str) -> dict:
     }
 
 
+def natural_key(name):
+    """文件名自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r"(\d+)", text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
+
+
 def discover_xls(data_dir: str | Path) -> list[Path]:
     """按文件名序号排序地列出输入目录中的 xls（忽略 Office 临时文件）。"""
     folder = Path(data_dir)
     if not folder.is_dir():
         raise FileNotFoundError(f"输入目录不存在: {folder}")
     files = [p for p in folder.glob("*.xls") if not p.name.startswith("~$")]
-    files.sort(key=lambda p: (parse_filename(p.name).get("seq") or 10**9, p.name))
+    files.sort(key=lambda p: (parse_filename(p.name).get("seq") or 10**9,
+                              natural_key(p.name)))
     return files
 
 

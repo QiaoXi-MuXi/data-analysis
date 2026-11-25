@@ -35,9 +35,10 @@ ALIASES = {
 }
 GLOBAL_HEADERS = ["参数", "值", "说明"]
 GLOBAL_KEYS = ("参考载荷_mN", "载荷容差_pct", "漂移上限_nm_s", "离群z阈值",
-               "双峰最小间隙比", "配对样品对", "绘图dpi",
+               "双峰最小间隙比", "配对样品对", "绘图dpi", "输出格式",
                "压痕合并_启用", "压痕合并_E偏差上限_pct",
-               "压痕合并_H偏差上限_pct", "压痕合并_最小压痕数")
+               "压痕合并_H偏差上限_pct", "压痕合并_最小压痕数",
+               "能量色阶", "端点边距", "样品配色")
 GLOBAL_DOC = {
     "参考载荷_mN": "标称最大载荷，用于偏差质控（默认 30）",
     "载荷容差_pct": "相对标称载荷的允许偏差 %（默认 8）",
@@ -45,11 +46,19 @@ GLOBAL_DOC = {
     "离群z阈值": "稳健 z 分数（中位数/MAD）离群阈值（默认 3.5）",
     "双峰最小间隙比": "最大间隙占全距的比例，达到才认为有两簇（默认 0.25）",
     "配对样品对": "同一测点下要比的样品编号，如 1100-1210；多对用分号隔开",
-    "绘图dpi": "输出图片分辨率（默认 180）",
+    "绘图dpi": "输出图片分辨率（默认 600）",
+    "输出格式": "图片格式：png（默认）；需要矢量稿时写 png;pdf;svg（可任意组合，至少一种）",
     "压痕合并_启用": "同一 xls 内 Test 1..N 偏差小则合并为一条代表曲线（1开/0关，默认1）",
     "压痕合并_E偏差上限_pct": "文件内各次压痕 E 变异系数上限 %（默认 5），低于它才合并",
     "压痕合并_H偏差上限_pct": "文件内各次压痕 H 变异系数上限 %（默认 5），低于它才合并",
     "压痕合并_最小压痕数": "一个文件至少几次有效压痕才考虑合并（默认 3）",
+    "能量色阶": ("能量分组的冷暖色轴：从冷到暖写一串颜色，长度任意，用分号隔开，"
+                 "如 #08306B;#2C80BB;#C8CB94;#DD8438;#8C1A1A；"
+                 "留空用内置 8 锚点色轴；程序按分组数在色轴上等分取色"),
+    "端点边距": ("取色区间两端各留出的比例（0–0.35，默认 0.06）；"
+                 "分组很少时避免取到色轴最暗的两端"),
+    "样品配色": ("按样品编号指定颜色，如 1100:#2f6fb5;1210:#d1495b;1120:#e08b2e；"
+                 "未列出的样品用默认色板，也可写 其他:#5c6b73"),
 }
 
 
@@ -202,6 +211,10 @@ def write_workbook(path, rows, globals_rows=None):
         ("2. 双击 fill_config.bat 把 data 里的文件导入本表；已有行的设置会保留。", False),
         ("3. 打开 config.xlsx，在「配置」表里设置，存盘后双击 run.bat。", False),
         ("4. 全局参数在「全局设置」表；留空用默认值，不用改 config.json。", False),
+        ("5. 图片格式由「全局设置」的「输出格式」控制：默认 png；需要矢量稿写 png;pdf;svg。", False),
+        ("6. 配色在「全局设置」：能量色阶=一长串冷暖颜色（长度任意，按分组数等分取色）；"
+         "端点边距=两端留边；样品配色=按样品编号指定颜色。", False),
+        ("7. 换了样品数量或能量分组数量，不用改颜色设置；色阶会自动按新的组数重新等分。", False),
         ("", False),
         ("配置列说明", True),
         ("文件        data 文件夹里的 xls 文件名，必填", False),
@@ -214,12 +227,9 @@ def write_workbook(path, rows, globals_rows=None):
         ("备注        只写给自己看，不影响计算", False),
         ("", False),
         ("表头中英文都认，列顺序可以调整；括号里的 (0/1) 只是提示。", False),
-        ("产物：out\\report.md、nano_results.xlsx、summary.json、indent_detail.csv。", False),
-        ("图片：out\\figures\\overview_all.png（全部数据总图），", False),
-        ("      out\\figures\\grouped_bar.png（按分组+样品编号的柱状图，同组紧邻、"
-         "不同组留间隔、同一样品颜色一致），", False),
-        ("      out\\figures\\per_sample_*.png（每个样品编号一张），", False),
-        ("      out\\figures\\per_file\\*.png（每个文件一张）。", False),
+        ("产物统一写入 out：report.md、nano_results.xlsx、summary.json、indent_detail.csv。", False),
+        ("图片：out\\figures\\Fig1–Fig5、FigS1、merged_curves、grouped_bar，以及 per_file\\*.png。", False),
+        ("默认只输出 PNG；在「全局设置」的「输出格式」可改为 png;pdf;svg。", False),
     ]
     for text, bold in lines:
         doc.append([text])
@@ -306,7 +316,67 @@ def _merge_globals(base, overrides):
                 pairs.append([sample_value(bits[0]), sample_value(bits[1])])
         if pairs:
             cfg["组间比较"]["关注样品对"] = pairs
+    formats = cfg["绘图"].get("格式", ["png"])
+    if "输出格式" in overrides:
+        formats = overrides["输出格式"]
+    if isinstance(formats, str):
+        formats = re.split(r"[;,，、\s]+", formats)
+    valid = {"png", "pdf", "svg"}
+    clean = [str(f).strip().lower() for f in (formats or [])]
+    clean = [f for f in clean if f in valid]
+    cfg["绘图"]["格式"] = list(dict.fromkeys(clean)) or ["png"]
+
+    # 配色：能量色阶（任意长度）、取色端点边距、样品颜色
+    draw = cfg["绘图"]
+    draw.setdefault("端点边距", 0.06)
+    if not draw.get("样品配色") and isinstance(draw.get("配色"), dict):
+        # 兼容旧配置：绘图 -> 配色 就是按样品编号给的颜色
+        draw["样品配色"] = {str(k): v for k, v in draw["配色"].items()}
+    if "能量色阶" in overrides:
+        ramp = _split_colors(overrides["能量色阶"])
+        if len(ramp) >= 2:
+            draw["能量色阶"] = ramp
+    if "端点边距" in overrides:
+        try:
+            edge = float(overrides["端点边距"])
+        except (TypeError, ValueError):
+            edge = None
+        if edge is not None and 0.0 <= edge <= 0.35:
+            draw["端点边距"] = edge
+    if "样品配色" in overrides:
+        mapping = _parse_sample_colors(overrides["样品配色"])
+        if mapping:
+            draw["样品配色"] = {**draw.get("样品配色", {}), **mapping}
     return cfg
+
+
+def _split_colors(text):
+    """'#08306B;#2C80BB' -> ['#08306B', '#2C80BB']; 忽略非法 token。"""
+    tokens = re.split(r"[;,，、\s]+", str(text or ""))
+    colors = []
+    for token in tokens:
+        token = token.strip()
+        if re.fullmatch(r"#?[0-9a-fA-F]{6}", token):
+            colors.append(token if token.startswith("#") else "#" + token)
+    return colors
+
+
+def _parse_sample_colors(text):
+    """'1100:#2f6fb5;1210:#d1495b' -> {1100: '#2f6fb5', 1210: '#d1495b'}."""
+    mapping = {}
+    for chunk in re.split(r"[;，]+", str(text or "")):
+        if ":" not in chunk and "：" not in chunk:
+            continue
+        name, color = re.split(r"[:：]", chunk, maxsplit=1)
+        name, color = name.strip(), color.strip()
+        colors = _split_colors(color)
+        if not name or not colors:
+            continue
+        key = name if name.lower() in ("其他", "other", "default") else sample_value(name)
+        mapping[key] = colors[0]
+        if isinstance(key, int):
+            mapping[str(key)] = colors[0]
+    return mapping
 
 
 def excel_lock_path(path):

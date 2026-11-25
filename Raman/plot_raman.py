@@ -17,6 +17,8 @@ data, not an instrument baseline measurement.
 Usage:
     python plot_raman.py --xmin 500 --xmax 1000 --height 30
     python plot_raman.py --xmin 200 --xmax 1200 --height 80 --src data --out out
+    python plot_raman.py --montage --src data
+    python plot_raman.py --montage montage.xlsx --src data
 """
 import argparse
 import concurrent.futures as cf
@@ -73,15 +75,27 @@ FIT_WIN = 30.0                # +- window for the peak-centre fit, cm-1
 BASE_WIN = 60.0               # +- window for the baseline search, cm-1
 MERGE_DX = 15.0               # maxima closer than this are one peak
 MAX_LABELS = 10
-# 激光线（瑞利散射）漏光：0 cm-1 附近那个很尖的假峰不是拉曼峰，排除掉。
-# 排除以 zero_at（校正后的激光线位置）为中心、半宽 ZERO_GUARD cm-1 的区间。
+# 激光线（瑞利散射）漏光：0 cm-1 附近那条又尖又高的线不是拉曼峰。排除以
+# zero_at（校正后的激光线位置）为中心、半宽 ZERO_GUARD cm-1 的区间。
+# 半宽取 50：144 cm-1 的最低真带在区外，不会被误伤；50-76 cm-1 的滤光片截止边
+# 台阶顶仍按峰标注（读数时记得那是仪器边）。
 # 设 0 可关闭排除。
 ZERO_GUARD = 50.0
 
+# 峰宽下限（采样点数，半高宽）：真实拉曼带受仪器分辨率限制，半高宽至少跨
+# 2 个采样点；宇宙线/坏点只有一个点，平滑后永远到不了半高，计数为 0。
+# 设 0 关闭这条判据。
+MIN_WIDTH_PTS = 2
+
 # 自适应峰高阈值: thr = max(AUTO_K_SIGMA * 噪声σ, AUTO_PEAK_RATIO * 最强峰H)。
 # 噪声下限压掉随机毛刺(弱信号谱靠它兜底), 相对主峰比例压掉高动态谱里的中等
-# 杂散峰。σ 用差分 MAD 稳健估计。参数经多谱标定, 细节见 auto_threshold()。
-AUTO_K_SIGMA = 2.5
+# 杂散峰。σ 用差分 MAD 稳健估计。
+# k 为什么是 5.5：H 的基线取 ±60 cm-1 内两侧极小值中较高的那个，在纯噪声谱上
+# 这个基线天然比局部电平低 1-1.5σ，所以表观 H/σ 并不是真显著性。124 条实测谱
+# 上取"没有任何真实带"的 1200 cm-1 以上区间统计 H/σ：中位数 3.6、90 分位 4.8、
+# 最大 7.1。取 5.5 后 124 条谱在该区间只剩 0 个标签，而三个真带（144/566/762）
+# 全部保留；取 2.5 时同样的数据会冒出 281 个标签，86% 落在 1200 cm-1 以上。
+AUTO_K_SIGMA = 5.5
 AUTO_PEAK_RATIO = 0.011
 
 
@@ -214,25 +228,51 @@ def auto_threshold(x, y, k_sigma=AUTO_K_SIGMA, ratio=AUTO_PEAK_RATIO,
     return max(k_sigma * sig, ratio * hmax), sig, hmax
 
 
+def half_width_pts(ys, i, base, h):
+    """半高宽的采样点数：平滑曲线上高于 base + h/2 的连续点数。
+
+    用平滑曲线量宽度、用原始采样点的值量高度，是刻意的：一个宇宙线尖峰
+    平滑后只剩 h/5 高的鼓包，永远到不了原始 h 的一半，宽度记为 0；真实带
+    半高宽跨 4-6 个点，读出来就是 4-6。两者一对比就能把单点尖峰挑出来。
+    """
+    if h <= 0:
+        return 0
+    half = base + 0.5 * h
+    n = len(ys)
+    l = i
+    while l > 0 and ys[l] > half:
+        l -= 1
+    r = i
+    while r < n - 1 and ys[r] > half:
+        r += 1
+    return r - l
+
+
 def find_peaks(x, y, ys, h_min, max_labels=MAX_LABELS,
-               zero_at=0.0, zero_guard=ZERO_GUARD):
+               zero_at=0.0, zero_guard=ZERO_GUARD, min_width=MIN_WIDTH_PTS):
     """Peaks whose height above baseline H = I_max - I_baseline clears h_min.
 
     max_labels keeps the tallest few, so a crowded plot labels the peaks that
     matter instead of the leftmost ones.
 
-    zero_at / zero_guard 排除激光线（瑞利散射）漏光造成的假峰：0 cm-1 附近
-    那个又尖又窄的峰不是拉曼峰。zero_at 是激光线所在的波数（单谱模式校正后
-    等于 shift，堆叠模式为 0），zero_guard 是排除半宽；用 0 关闭排除。
+    zero_at / zero_guard 排除激光线（瑞利散射）漏光和滤光片截止边造成的假峰：
+    0 cm-1 附近那个又尖又高的台阶不是拉曼峰。zero_at 是激光线所在的波数（单
+    谱模式校正后等于 shift，堆叠模式为 0），zero_guard 是排除半宽；用 0 关闭。
+
+    min_width 是半高宽下限（采样点数），挡掉宇宙线/坏点这类只有一个点的尖峰
+    ——它们的 H 来自单个点，平滑后的半高宽是 0。真实带受仪器分辨率限制，半高
+    宽至少跨 2 个点；用 0 关闭。
     """
     found = []
     for i in local_maxima(ys):
-        # 激光线漏光：落在排除区内的局部极大直接丢掉，不做拟合
+        # 激光线漏光/滤光片截止边：落在排除区内的局部极大直接丢掉，不做拟合
         if zero_guard and abs(x[i] - zero_at) <= zero_guard:
             continue
         base = baseline_under(x, ys, i)
         h = float(y[i]) - base
         if h >= h_min:
+            if min_width and half_width_pts(ys, i, base, h) < min_width:
+                continue
             found.append((h, i, base))
     if not found:
         return []
@@ -243,7 +283,9 @@ def find_peaks(x, y, ys, h_min, max_labels=MAX_LABELS,
         if all(abs(x[i] - x[j]) > MERGE_DX for _, j, _ in kept):
             kept.append((h, i, base))
     kept.sort(key=lambda t: x[t[1]])
-    if len(kept) > max_labels:
+    # max_labels=None 表示保留全部分析峰；None 只供定量比较使用，既有
+    # 单谱/堆叠调用的默认整数上限不变。
+    if max_labels is not None and len(kept) > max_labels:
         # 超出上限时按峰高筛，不是按横轴位置截断
         tall = sorted(kept, key=lambda t: -t[0])[:max_labels]
         kept = sorted(tall, key=lambda t: x[t[1]])
@@ -252,7 +294,7 @@ def find_peaks(x, y, ys, h_min, max_labels=MAX_LABELS,
 
 # -------------------------------------------------------------------- figure
 def label_peaks(ax, fig, ax_rect, lo, hi, color, fs, items,
-                pad, stem_lo, stem_hi, step_up):
+                pad, stem_lo, stem_hi, step_up, levels=3):
     """Leader line + value above each peak, shared by both figure types.
 
     items: [(centre, y at the peak), ...] already sorted left to right.
@@ -261,6 +303,9 @@ def label_peaks(ax, fig, ax_rect, lo, hi, color, fs, items,
     per-curve band). Labels closer than the text is wide step up a level instead
     of being dropped, and labels near the frame edges align inward so the canvas
     does not clip them.
+
+    levels: 错层用几档。默认 3 档; 拼图里谱少、同一条谱要标的峰又密, 3 档
+    会在第 4 个紧邻标签处绕回来压住第 1 个, 所以那边传更多的档数。
     """
     fig_w, fig_h = fig.get_size_inches()
     ax_w_pt = ax_rect[2] * fig_w * 72.0
@@ -270,7 +315,7 @@ def label_peaks(ax, fig, ax_rect, lo, hi, color, fs, items,
     last_x, level = None, 0
     for c, yp in items:
         if last_x is not None and c - last_x < min_dx:
-            level = (level + 1) % 3
+            level = (level + 1) % levels
         else:
             level = 0
         last_x = c
@@ -636,7 +681,7 @@ def render_stack(rows, det, out_path, xlim=None):
     plt.close(fig)
 
 
-def save_figure(fig, out_path, attempts=3):
+def save_figure(fig, out_path, attempts=3, compress_level=1):
     """Write the png through a temp file, retrying a few times.
 
     Saving straight onto the target is fragile on Windows: an antivirus or sync
@@ -644,10 +689,13 @@ def save_figure(fig, out_path, attempts=3):
     OSError. Rendering to a temp file first and swapping it in with os.replace
     keeps a half-written png from ever being left behind, and the retries ride
     out the transient locks.
+
+    compress_level 默认 1: 单谱/堆叠一次出几十张，压缩到 6 每张多花的时间
+    叠起来明显; 拼图一次只有十几张、底图又大, 由调用方传 6 换体积。
     """
     tmp = out_path + ".part"
     # compress_level=1: PNG 大一点, 但每张省 ~20 ms (26 张省半秒), 肉眼看不出差别
-    pil_kw = {"compress_level": 1}
+    pil_kw = {"compress_level": compress_level}
     for n in range(attempts):
         try:
             fig.savefig(tmp, dpi=DPI, facecolor="white", format="png",
@@ -665,6 +713,28 @@ def save_figure(fig, out_path, attempts=3):
     # the figure
     fig.savefig(out_path, dpi=DPI, facecolor="white", format="png",
                 pil_kwargs=pil_kw)
+
+
+def natural_key(name):
+    """Windows 资源管理器式自然排序：2-1 排在 10-1 前，数字按数值比较。"""
+    text = str(name)
+    parts = re.split(r"(\d+)", text)
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
+
+
+def default_out_dir(here, compare=None, stack=None, montage=None,
+                    batch_display=None):
+    """四种模式默认各用独立子目录，避免互相清理结果。"""
+    mode = ("batch_display" if batch_display is not None else
+            "montage" if montage is not None else
+            "compare" if compare else "stack" if stack else "single")
+    return os.path.join(here, "out", mode)
 
 
 def safe_stem(name):
@@ -756,6 +826,11 @@ def render_one(job):
     peaks, centers = [], []
     if do_peaks and len(xw) >= 8:
         ys = smooth(yw)
+        # thr = None 表示这条谱没有指定阈值（表里留空 / 命令行没给 --height），
+        # 按它自己的噪声和最强峰算，弱信号谱不会因为固定 5 counts 冒出假峰。
+        if thr is None:
+            thr, _sig, _hmax = auto_threshold(xw, yw, zero_at=shift,
+                                              zero_guard=zero_guard)
         peaks = find_peaks(xw, yw, ys, thr, max_labels=max_labels,
                            zero_at=shift, zero_guard=zero_guard)
         centers = [peak_center(xw, yw, ys, i) for _, i, _ in peaks]
@@ -815,20 +890,86 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Plot Raman spectra over a window.")
     ap.add_argument("--xmin", type=float, default=None, help="left edge, cm-1")
     ap.add_argument("--xmax", type=float, default=None, help="right edge, cm-1")
-    ap.add_argument("--height", type=float, default=5.0,
-                    help="label peaks with H = I_max - I_baseline at least this")
+    ap.add_argument("--height", type=float, default=None,
+                    help="label peaks with H = I_max - I_baseline at least this "
+                         "(counts); omit for the per-spectrum adaptive threshold "
+                         "max(5.5 sigma, 1.1%% of the tallest peak)")
     ap.add_argument("--shift", type=float, default=0.0,
                     help="peak-position correction in cm-1: every wavenumber is "
                          "moved by this amount, positive to the right")
     ap.add_argument("--zero-guard", type=float, default=ZERO_GUARD,
                     help="ignore peaks within this half-width (cm-1) of the "
                          "laser line at zero; 0 disables the guard")
-    ap.add_argument("--stack", default=None,
-                    help="xlsx listing spectra to stack on one figure; each row "
-                         "also gets its own single-spectrum figure")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--stack", default=None,
+                      help="xlsx listing spectra to stack on one figure; each row "
+                           "also gets its own single-spectrum figure")
+    mode.add_argument("--compare", default=None,
+                      help="compare.xlsx naming one reference spectrum and sample "
+                           "spectra; writes quantitative peak comparison reports")
+    mode.add_argument("--montage", nargs="?", const="", default=None,
+                      metavar="XLSX",
+                      help="photo + spectra montage: the optical image on top, the "
+                           "spectra of that sample's positions below; omit the value "
+                           "to auto-match <name>-1-1.png to <name>-<n>.txt, or pass "
+                           "montage.xlsx to list them explicitly")
+    mode.add_argument("--batch-display", nargs="?", const="", default=None,
+                      metavar="XLSX",
+                      help="layered batch display: overview + per-point + repeat + "
+                           "paired + reference metrics with an offline index.html; "
+                           "omit the value to auto-discover, or pass batch_display.xlsx")
     ap.add_argument("--src", default=os.path.join(here, "data"), help="input folder")
-    ap.add_argument("--out", default=os.path.join(here, "out"), help="output folder")
+    ap.add_argument("--out", default=None,
+                    help="output folder; default: out/single, out/stack, out/compare "
+                         "or out/montage according to the selected mode")
     args = ap.parse_args(argv)
+    if args.out is None:
+        args.out = default_out_dir(here, args.compare, args.stack,
+                                   args.montage, args.batch_display)
+
+    if args.batch_display is not None:
+        if (args.xmin is None) != (args.xmax is None):
+            print("ERROR: --xmin and --xmax must be supplied together", file=sys.stderr)
+            return 2
+        try:
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            from batch_display_runner import run_batch_display
+            return run_batch_display(args.batch_display or None, args.src, args.out,
+                                     xmin=args.xmin, xmax=args.xmax)
+        except (OSError, ValueError) as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            return 1
+
+    if args.montage is not None:
+        if (args.xmin is None) != (args.xmax is None):
+            print("ERROR: --xmin and --xmax must be supplied together", file=sys.stderr)
+            return 2
+        try:
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            from raman_montage import run_montage
+            return run_montage(args.montage or None, args.src, args.out,
+                               xmin=args.xmin, xmax=args.xmax,
+                               height=args.height, shift=args.shift,
+                               zero_guard=args.zero_guard)
+        except (OSError, ValueError) as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            return 1
+
+    if args.compare:
+        if (args.xmin is None) != (args.xmax is None):
+            print("ERROR: --xmin and --xmax must be supplied together", file=sys.stderr)
+            return 2
+        try:
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            from compare_runner import run_compare
+            return run_compare(args.compare, args.src, args.out,
+                               xmin=args.xmin, xmax=args.xmax)
+        except (OSError, ValueError) as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            return 1
 
     if args.stack:
         warn_if_excel_open(args.stack)
@@ -855,7 +996,14 @@ def main(argv=None):
                     print("ERROR: no such file: %s" % path, file=sys.stderr)
                     return 1
                 thr = r["height"] if r["height"] is not None else args.height
-                stem = safe_stem(os.path.splitext(os.path.basename(path))[0])
+                # 表里写的是子目录相对路径时，单图文件名带上前缀，
+                # 否则 1100 与 1210 里的 1-1.png 会互相覆盖
+                if os.path.isabs(r["file"]):
+                    stem = safe_stem(os.path.splitext(
+                        os.path.basename(r["file"]))[0])
+                else:
+                    stem = safe_stem(os.path.splitext(r["file"])[0]
+                                     .replace("\\", "-").replace("/", "-"))
                 stems.append(stem)
                 jobs.append((path,
                              window[0] if window else None,
@@ -912,7 +1060,8 @@ def main(argv=None):
         print("ERROR: --xmax must be greater than --xmin", file=sys.stderr)
         return 2
 
-    files = sorted(glob.glob(os.path.join(args.src, "*.txt")))
+    files = sorted(glob.glob(os.path.join(args.src, "*.txt")),
+                   key=lambda path: natural_key(os.path.basename(path)))
     if not files:
         print("ERROR: no .txt files in %s" % args.src, file=sys.stderr)
         return 1

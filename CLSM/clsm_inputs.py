@@ -12,6 +12,18 @@ import numpy as np
 from inspect_zen_lsm import LsmFormatError, ZenLsm
 
 
+def natural_key(name):
+    """文件名自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r"(\d+)", text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
+
+
 def discover_inputs(directory, input_format="auto", samples=None):
     """沿用根目录优先、无输入时递归的规则；同目录同名 TXT 优先。"""
     directory = Path(directory)
@@ -26,7 +38,7 @@ def discover_inputs(directory, input_format="auto", samples=None):
         requested = {str(name).casefold() for name in samples}
         missing = requested - {p.stem.casefold() for p in files}
         if missing:
-            raise ValueError("--samples 未找到样品名（不含扩展名）：" + ", ".join(sorted(missing)))
+            raise ValueError("--samples 未找到样品名（不含扩展名）：" + ", ".join(sorted(missing, key=natural_key)))
         excluded = [(p, "本次 --samples 未选择该样品") for p in files if p.stem.casefold() not in requested]
         files = [p for p in files if p.stem.casefold() in requested]
     groups = {}
@@ -35,7 +47,7 @@ def discover_inputs(directory, input_format="auto", samples=None):
         groups.setdefault(key, []).append(path)
     selected, ignored = [], excluded
     for paths in groups.values():
-        paths.sort(key=lambda p: (p.suffix.casefold() != ".txt", p.name.casefold(), p.name))
+        paths.sort(key=lambda p: (p.suffix.casefold() != ".txt", natural_key(p.name)))
         selected.append(paths[0])
         ignored.extend((p, f"同名输入优先使用 {paths[0].name}，避免重复统计") for p in paths[1:])
     # 输出按样品名命名；不同子目录的同名样品会覆盖图像，须在任何写入前拒绝。
@@ -45,8 +57,8 @@ def discover_inputs(directory, input_format="auto", samples=None):
         if key in seen:
             raise ValueError(f"不同目录存在同名样品，输出会冲突：{seen[key]} 与 {path}；请分目录运行")
         seen[key] = path
-    order = lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name.casefold())]
-    return sorted(selected, key=order), sorted(ignored, key=lambda item: str(item[0]).casefold())
+    return (sorted(selected, key=lambda p: natural_key(p.name)),
+            sorted(ignored, key=lambda item: natural_key(item[0])))
 
 
 def add_input_arguments(parser):

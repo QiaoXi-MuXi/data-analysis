@@ -5,6 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import math
+import re
+
+
+def natural_key(name):
+    """文件名自然排序：Raman 的 2-1 应排在 10-1 前，数字按数值比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r"(\d+)", text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
 
 
 @dataclass(frozen=True)
@@ -22,7 +35,7 @@ PROJECTS = (
             ('.bmp', '.png', '.jpg', '.jpeg', '.dat'),
             '按界面配置的启用行处理；原始数据只读。DAT 去噪和高通为待验证的候选处理。'),
     Project('Raman', '拉曼光谱', 'RAMAN  /  SPECTRAL ANALYSIS', 'plot_raman.py', ('.txt',),
-            '堆叠模式使用界面中的顺序和逐行参数；单谱模式使用运行设置。归一化不是绝对强度标定。'),
+            '基准对比使用一个基准谱对多个启用样品做峰级和全谱比较；堆叠只做视觉对照。匹配容差不代表物相鉴定。'),
     Project('CLSM', '槽宽与槽深', 'CLSM  /  SURFACE METROLOGY', 'extract_groove.py', ('.txt', '.lsm'),
             '槽宽浅壁边界仍需人工核验。LSM 默认要求外部高度标定；待核验试算不可作为正式定量结论。'),
     Project('ER', '发票验收单', 'REIMBURSEMENT  /  LOCAL OCR', 'fill_reimbursement.py',
@@ -50,6 +63,8 @@ def default_options(root: Path, project: Project) -> dict:
         'template': '', 'mode': 'config' if project.key in ('Ra', 'Raman') else 'default',
         'types': 'all', 'no_plot': False, 'batch': '',
         'xmin': '', 'xmax': '', 'height': '5', 'shift': '0',
+        'compare_reference': '', 'reference_height': '',
+        'compare_tolerance': '10', 'compare_normalize': True, 'zero_guard': '50',
         'input_format': 'auto', 'lsm_mode': 'require-calibration', 'scale': '', 'offset': '0',
         'dy': '', 'strip': '12.6', 'count': '9', 'seed': '20261029', 'attempts': '4',
         'xlsx': str(folder / 'out' / 'results' / 'groove_paper_results.xlsx'),
@@ -117,20 +132,26 @@ def build_command(root: Path, project: Project, options: dict) -> Command:
     elif project.key == 'Raman':
         require_source()
         args += ['--src', str(source), '--out', str(output)]
-        if options['mode'] == 'config':
+        mode = options.get('mode', 'config')
+        if mode == 'config':
             args += ['--stack', str(config_file())]
+        elif mode == 'compare':
+            args += ['--compare', str(config_file())]
         xmin = add_numeric('--xmin', 'xmin', '区间下限')
         xmax = add_numeric('--xmax', 'xmax', '区间上限')
         if (xmin is None) != (xmax is None):
             raise ValueError('波数区间上下限请同时填写，或同时留空。')
-        if options['mode'] != 'config' and xmin is None:
-            raise ValueError('单谱模式请填写波数区间上下限。堆叠模式可留空并沿用配置。')
+        if mode not in ('config', 'compare') and xmin is None:
+            raise ValueError('单谱模式请填写波数区间上下限。堆叠/基准对比可留空并沿用配置。')
         if xmin is not None and xmin >= xmax:
             raise ValueError('区间下限必须小于上限。')
-        add_numeric('--height', 'height', '峰高阈值')
-        add_numeric('--shift', 'shift', '峰位校正')
+        if mode != 'compare':
+            add_numeric('--height', 'height', '峰高阈值')
+            add_numeric('--shift', 'shift', '峰位校正')
         results = (output,)
-        impact = f'图像及峰位表写入 {output}；同名文件会被替换，其他旧文件保留。'
+        impact = (f'对比表、图像和运行清单写入 {output}；匹配只表示峰位差在容差内，不是物相鉴定。'
+                  if mode == 'compare' else
+                  f'图像及峰位表写入 {output}；同名文件会被替换，其他旧文件保留。')
     elif project.key == 'CLSM':
         require_source()
         xlsx = as_path(options['xlsx'], root)
@@ -203,10 +224,12 @@ def list_inputs(root: Path, project: Project, options: dict, limit=2000):
         paths, _ = discover_inputs(source, options['input_format'])
         return paths[:limit], len(paths) > limit
     paths = []
+    order = (lambda p: natural_key(str(p.relative_to(source)))
+             if project.key == 'ER' else natural_key(p.name))
     iterator = source.rglob('*') if project.key == 'ER' else source.iterdir()
     for path in iterator:
         if valid(path):
             paths.append(path)
             if len(paths) > limit:
-                return sorted(paths[:limit]), True
-    return sorted(paths), False
+                return sorted(paths[:limit], key=order), True
+    return sorted(paths, key=order), False

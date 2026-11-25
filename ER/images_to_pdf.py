@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,12 +20,25 @@ A4_SIZE = (1754, 1240)
 RESOLUTION = 150.0
 
 
+def natural_key(name):
+    """文件名自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r"(\d+)", text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
+
+
 def collect_files(folder):
-    """只取图片和 PDF，按文件名排序。"""
+    """只取图片和 PDF，按文件名自然排序。"""
     if not folder.is_dir():
         raise ValueError(f'输入目录不存在：{folder}')
-    files = sorted(p for p in folder.iterdir()
-                   if p.is_file() and p.suffix.lower() in ALL_EXTS)
+    files = sorted((p for p in folder.iterdir()
+                    if p.is_file() and p.suffix.lower() in ALL_EXTS),
+                   key=lambda p: natural_key(p.name))
     if not files:
         raise ValueError(f'目录里没有图片或 PDF：{folder}')
     return files

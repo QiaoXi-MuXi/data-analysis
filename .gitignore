@@ -32,6 +32,15 @@ Thumbs.db
 Desktop.ini
 ~$*
 
+# 分发打包产物（体积大，只留本机）。
+/DataAnalysis_*.zip
+
+# 本地工具的权限恢复记录、批量试算输出目录与旧文件备份：只留本机。
+/.acl-recovery/
+/_batch_display_*/
+*.bak
+*.bak_*
+
 # ER 本地生成结果。
 /ER/*.xlsx
 

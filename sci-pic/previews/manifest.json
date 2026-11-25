@@ -3,14 +3,14 @@
     "id": "roughness",
     "workbook": "templates/sci_pic.xlsx",
     "preview": "previews/roughness.png",
-    "workbook_sha256": "c5f77d016d888ce9749151016e224a7027f18e36be86a542cafc7c3d051f23eb",
-    "script_sha256": "3aa399a649dbfd0b58c083baa97401d4a4a9e1d635e7c926e229f1f2e096a082"
+    "workbook_sha256": "d4c20b70293501dba2b697716dfdd0b56688729035e65d67b1f790990dccc569",
+    "script_sha256": "5c2fdf51b26e8185bdd47b1ab5781347bf369327102e7c111c3f488d31d5838e"
   },
   {
     "id": "removal_rate",
     "workbook": "templates/removal_rate.xlsx",
     "preview": "previews/removal_rate.png",
-    "workbook_sha256": "bf46cf37e608d12e0a9ead340c48cf4ceef72735e694c4adb035990919621d83",
-    "script_sha256": "3aa399a649dbfd0b58c083baa97401d4a4a9e1d635e7c926e229f1f2e096a082"
+    "workbook_sha256": "50d957ffa85f87b04208a6a2570aff25a4ed6d31e380abc6cccf98c8feb2f290",
+    "script_sha256": "5c2fdf51b26e8185bdd47b1ab5781347bf369327102e7c111c3f488d31d5838e"
   }
 ]

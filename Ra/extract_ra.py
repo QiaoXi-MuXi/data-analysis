@@ -554,17 +554,24 @@ def write_xlsx(out_path: Path, header, values, detail, row_flags=None, workbook=
 # ----------------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------------
+def natural_key(name):
+    """文件名自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r"(\d+)", text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
+
+
 def collect_files(input_dir: Path):
     exts = {'.bmp', '.png', '.jpg', '.jpeg'}
     files = [p for p in input_dir.iterdir()
              if p.suffix.lower() in exts and not p.name.startswith('~')
              and p.name not in OUTPUT_NAMES]      # 排除本脚本自身的输出产物
-
-    def key(p):
-        digits = ''.join(ch for ch in p.stem if ch.isdigit())
-        return (int(digits) if digits else 10 ** 9, p.name)
-
-    return sorted(files, key=key)
+    return sorted(files, key=lambda p: natural_key(p.name))
 
 
 def ensure_bat_encoding() -> bool:

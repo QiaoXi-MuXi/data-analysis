@@ -16,7 +16,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| 输入 | `data/` 内 JPG/JPEG/PNG/BMP/TIF/TIFF/WEBP 图片与 PDF，按文件名排序。 |
+| 输入 | `data/` 内 JPG/JPEG/PNG/BMP/TIF/TIFF/WEBP 图片与 PDF，按文件名自然排序（`2-1` 在 `10-1` 前）。 |
 | 配置 | `--input 目录` 指定其它输入目录，`--output 文件.pdf` 指定输出路径。 |
 | 运行 | 双击 `invoice_pdf.bat`；参数原样传递，如 `.\invoice_pdf.bat --no-pause`。 |
 | 输出 | 模块根目录 `物品验收单_时间戳.pdf`（与验收单 XLSX 同名不同扩展名），每次新文件名，不覆盖已有文件。 |

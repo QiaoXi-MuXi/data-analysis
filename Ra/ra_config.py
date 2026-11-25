@@ -20,6 +20,18 @@ import plot_labels
 HEADERS = ['文件', '启用(0/1)', '区域', '输出名', 'DAT去噪(0/1)', '高通方式', '截止波长(µm)', '四联图(0/1)', '独立图(0/1)', '数值标注(0/1)', '标注字号(px)', '标注颜色', '标注位置', '描边宽度(px)', '描边颜色']
 FILTERS = {'关闭': None, '自然样条候选': 'cubic', '高斯候选': 'gaussian'}
 IMAGE_EXTENSIONS = {'.bmp', '.png', '.jpg', '.jpeg'}
+
+
+def natural_key(name):
+    """文件名自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r'(\d+)', text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
 POSITION_RULE = '"' + ','.join(plot_labels.POSITIONS) + '"'
 
 
@@ -155,7 +167,7 @@ def initial_rows(data, result_book, base):
                         previous[file_key(source)]=(Path(source),[noise,high,cutoff])
         finally:wb.close()
     files=sorted((p for p in Path(data).iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS|{'.dat'}),
-                 key=lambda p:[int(v) if v.isdigit() else v.casefold() for v in re.split(r'(\d+)',p.name)]) if Path(data).is_dir() else []
+                 key=lambda p:natural_key(p.name)) if Path(data).is_dir() else []
     paths={file_key(p):p for p in files}
     paths.update({key:p for key,(p,_) in previous.items() if key not in paths})
     rows=[]

@@ -4,7 +4,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| 输入 | 截图 BMP/图片或 Zygo DAT；由 `ra_config.xlsx` 的启用行控制。 |
+| 输入 | 截图 BMP/图片或 Zygo DAT；由 `ra_config.xlsx` 的启用行控制；自动扫描和配置候选项按文件名自然排序（`2-1` 在 `10-1` 前）。 |
 | 配置 | `ra_config.xlsx`；`fill_config.bat` 默认使配置行与当前 `data/` 对齐，旧目录的配置行会移除，写前备份。 |
 | 运行 | 双击本目录唯一的 `run.bat`，参数原样传递。 |
 | 输出 | `ra_results.xlsx`、`out/bmp/`、`out/dat/`。 |
@@ -16,7 +16,7 @@
 
 `ra_config.xlsx → run.bat → ra_results.xlsx + out/`
 
-修改 `ra_config.xlsx`，保存后双击 `run.bat`，自动处理表中全部启用行，不再询问每区张数。运行只读配置，不把配置写回结果表，不会自动把data的新文件加入本次输入。
+修改 `ra_config.xlsx`，保存后双击 `run.bat`，自动处理表中全部启用行，不再询问每区张数。运行只读配置，不把配置写回结果表，不会自动把data的新文件加入本次输入。配置表正在 Excel 中打开时仍可运行，但会提示本次读取的是磁盘上已保存的版本，未保存的修改不生效；`fill_config.bat` 写配置前会检查占用，失败时提示保存关闭后重试。
 
 新增文件放入data后，双击 `fill_config.bat` 导入配置：新BMP/图片的DAT去噪列默认0，新DAT默认1，高通默认关闭。默认按当前data重建文件行集合，移除不在该目录的旧行，保留当前文件的已有参数；写入前自动备份配置。导入后可在Excel中逐行修改0/1，保存关闭后再运行 `run.bat`。
 

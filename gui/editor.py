@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
     QStyledItemDelegate, QCheckBox, QInputDialog, QListWidget, QListWidgetItem)
 
 from documents import SCHEMAS, Document, Problem, readiness, flag, parse_value, read_exchange, resolve_source, append_sources, export_csv, export_xlsx
+from model import natural_key
 from ra_batch import ColorField, RaBatchDialog
 
 
@@ -46,6 +47,16 @@ class EditRows(QUndoCommand):
         self.model.apply(self.after)
 
 
+def sample_columns(document):
+    if document.module == 'Ra':
+        columns = ['enabled', 'file', 'stem', 'high']
+    elif document.module == 'Raman' and document.options.get('mode') == 'compare':
+        columns = ['enabled', 'file', 'label', 'height', 'peaks']
+    else:
+        columns = ['enabled', 'file', 'label', 'normalize', 'height']
+    return [*columns, '_status']
+
+
 class SampleModel(QAbstractTableModel):
     changed = Signal()
     invalid = Signal(str)
@@ -55,11 +66,18 @@ class SampleModel(QAbstractTableModel):
         self.document = document
         self.stack = QUndoStack(self)
         self.stack.setUndoLimit(60)
-        self.columns = ['enabled', 'file', 'stem', 'high'] if document.module == 'Ra' else ['enabled', 'file', 'label', 'normalize', 'height']
-        self.columns.append('_status')
+        self.columns = sample_columns(document)
         self.problems = {}
         self.checking = True
         self.schema = {c.key: c for c in SCHEMAS[document.module]}
+
+    def set_compare_mode(self):
+        columns = sample_columns(self.document)
+        if columns != self.columns:
+            self.beginResetModel()
+            self.columns = columns
+            self.endResetModel()
+
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.document.rows)
@@ -266,8 +284,8 @@ class ConfigEditor(QWidget):
         export = QPushButton('导出 / 另存为')
         menu = QMenu(export)
         menu.addAction('样本参数 CSV…', self.export_table)
-        if document.module == 'Ra':
-            menu.addAction('Excel 配置（含标注设置）…', self.export_excel)
+        if document.module == 'Ra' or (document.module == 'Raman' and document.options.get('mode') == 'compare'):
+            menu.addAction('Excel 配置（含运行参数）…', self.export_excel)
         menu.addAction('项目另存为 JSON…', self.save_as_requested.emit)
         export.setMenu(menu)
         top.addWidget(export)
@@ -321,6 +339,9 @@ class ConfigEditor(QWidget):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         form.setVerticalSpacing(12)
         for column in SCHEMAS[document.module]:
+            if (document.module == 'Raman' and document.options.get('mode') == 'compare'
+                    and column.key in ('normalize', 'offset', 'xmin', 'xmax')):
+                continue
             if column.kind in ('enabled', 'bool', 'choice'):
                 widget = QComboBox()
                 widget.addItem('默认（沿用原模块规则）', None)
@@ -388,6 +409,13 @@ class ConfigEditor(QWidget):
         if old:
             old.deleteLater()
         self.updated()
+
+    def sync_mode(self):
+        if not hasattr(self, 'model'):
+            return
+        self.model.set_compare_mode()
+        for col in range(2, self.model.columnCount()):
+            self.table.setColumnWidth(col, 145 if col == 2 else 125)
 
     @Slot(bool)
     def clean_changed(self, clean):
@@ -551,6 +579,8 @@ class ConfigEditor(QWidget):
             self.add_paths(paths)
 
     def add_paths(self, paths):
+        if self.document.module == 'Raman':
+            paths = sorted(paths, key=lambda p: natural_key(Path(p).name))
         added = append_sources(self.document, paths)
         if added:
             self.selected_row = len(self.document.rows)

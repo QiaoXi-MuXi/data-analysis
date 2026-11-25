@@ -43,7 +43,8 @@ def prepare_run(root, project, options, document=None):
     root = Path(root).resolve()
     options = deepcopy(options)
     frozen = deepcopy(document) if document is not None else None
-    configured = project.key in ('Ra', 'Raman') and options['mode'] == 'config'
+    configured = (project.key == 'Raman' and options['mode'] in ('config', 'compare')) or (
+        project.key == 'Ra' and options['mode'] == 'config')
     temporary = None
     state = root / 'out' / 'gui'
     if configured:

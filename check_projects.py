@@ -11,7 +11,13 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent
 MODULES = {
     'Ra': ('extract_ra.py', 'ra_config.py', 'ra_workflow.py', 'plot_labels.py', 'zygo_dat.py', 'zygo_render.py', 'zygo_style_assets.npz'),
-    'Raman': ('plot_raman.py', '_fill_stack.py', '_make_stack_xlsx.py'),
+    'Raman': ('plot_raman.py', '_fill_stack.py', '_make_stack_xlsx.py',
+              'compare_config.py', 'raman_compare.py', 'compare_report.py',
+              'compare_runner.py', '_make_compare_xlsx.py',
+              'raman_montage.py', '_make_montage_xlsx.py',
+              'batch_display_config.py', 'batch_display_data.py',
+              'batch_display_plots.py', 'batch_display_runner.py',
+              '_make_batch_display_xlsx.py'),
     'CLSM': ('extract_groove.py', 'clsm_inputs.py', 'profile_measurement.py', 'profile_sampling.py', 'profile_plots.py', 'surface_plots.py', 'inspect_zen_lsm.py'),
     'ER': ('fill_reimbursement.py',),
     'sci-pic': ('plot_sci_pic.py', 'build_previews.py', 'templates.json', 'templates/sci_pic.xlsx',

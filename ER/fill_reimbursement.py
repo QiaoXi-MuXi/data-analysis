@@ -27,6 +27,18 @@ CENT = Decimal('0.01')
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 IMAGE_TYPES = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
 DECIMAL_RE = re.compile(r'-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?')
+
+
+def natural_key(name):
+    """文件名/相对路径自然排序：2-1 排在 10-1 前，数字段按整数比较。"""
+    text = str(name)
+    key = []
+    for part in re.split(r'(\d+)', text):
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part.casefold()))
+    return (key, text.casefold())
 # 低清图片先用标准放大；解析失败时按列出的顺序换预处理重试，仍须通过同样的票面校验。
 OCR_PROFILES = {
     'standard': {'target': 3000, 'contrast': 0, 'sharpen': 0, 'gray': False},
@@ -784,7 +796,8 @@ def run(args):
     if template is None:
         raise InvoiceError('templates 中必须只有一个 Excel 模板，多个模板时请用 --template 指定。')
     workbook_info(template)
-    paths = sorted((p for p in data.rglob('*') if p.is_file() and p.suffix.lower() in IMAGE_TYPES | {'.pdf'}), key=lambda p: str(p.relative_to(data)).casefold())
+    paths = sorted((p for p in data.rglob('*') if p.is_file() and p.suffix.lower() in IMAGE_TYPES | {'.pdf'}),
+                   key=lambda p: natural_key(p.relative_to(data)))
     if not paths:
         raise InvoiceError('data 中没有 PDF 或支持的图片。')
     workers = max(1, int(getattr(args, 'workers', MAX_OCR_WORKERS)))
