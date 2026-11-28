@@ -55,3 +55,18 @@ Desktop.ini
 
 # 风格基线等一次性验收产物（含绝对路径与临时输出）：只留本机。
 /_style_baseline_*/
+/_style_p3_test/
+
+# 配置表修改前备份（各模块 templates/.backups/ 等）：本地留档，不上传。
+.backups/
+
+# 本地 WIP 实验目录（登记见 LOCAL_ONLY.md）：抽取试验、校验输出、临时虚拟环境。
+# SEM/ 与 Nano/ 故意不加忽略：它们是待确认的候选内容，保持未跟踪以便单独决定。
+/1127/
+/_test_wip_extract_v3/
+/_verify_out_v4/
+/Raman_wip_out/
+/_wip_env/
+/_wip_env312/
+/_wip_uv/
+/_uv_cache/

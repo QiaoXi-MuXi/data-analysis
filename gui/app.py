@@ -21,20 +21,46 @@ sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 
 from PySide6.QtCore import (QObject, QRunnable, QThreadPool, QProcess, QProcessEnvironment,
-                            Qt, Signal, Slot, QTimer, QUrl, QSize)
-from PySide6.QtGui import QDesktopServices, QImageReader, QPixmap, QFont, QFontDatabase, QShortcut, QKeySequence, QIcon
+                            Qt, Signal, Slot, QTimer, QUrl, QSize, QEvent, QPointF)
+from PySide6.QtGui import (QDesktopServices, QImageReader, QPixmap, QFont, QFontDatabase, QShortcut,
+                           QKeySequence, QIcon, QWheelEvent)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QFrame, QLabel,
     QPushButton, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QComboBox, QCheckBox, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
     QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QPlainTextEdit, QSplitter, QScrollArea, QProgressBar, QAbstractItemView, QGridLayout, QSpinBox, QAbstractSpinBox)
+    QPlainTextEdit, QSplitter, QScrollArea, QProgressBar, QAbstractItemView, QGridLayout, QSpinBox, QAbstractSpinBox,
+    QToolButton, QMenu, QAbstractScrollArea)
 
 from model import PROJECTS, default_options, build_command, list_inputs, as_path, Command, natural_key
-from theme import STYLE
+import sci_pic as sci_pic_services
+from theme import STYLE, WARNING
 from documents import Document, read_exchange, load_json, flag, resolve_source, digest
 from editor import ConfigEditor
 from runs import prepare_run, finish_run, history, save_record
 from pdf_preview import render_pdf
+
+
+class WheelGuard(QObject):
+    """滚轮掠过下拉框、数值框时不再偷换值：事件改交给最近的滚动区，页面照常滚动。
+
+    Qt 默认给 QComboBox / QSpinBox 的 focusPolicy 是 WheelFocus，纯滚动就会把焦点抢过去并改值，
+    在检查器这种纵向排满输入框的区域最容易误触。
+    """
+    def eventFilter(self, watched, event):
+        if event.type() != QEvent.Type.Wheel or not isinstance(watched, (QComboBox, QAbstractSpinBox)):
+            return False
+        area = watched.parentWidget()
+        while area is not None and not isinstance(area, QAbstractScrollArea):
+            area = area.parentWidget()
+        if area is None:
+            event.ignore()
+            return True
+        viewport = area.viewport()
+        position = QPointF(viewport.mapFrom(watched, event.position().toPoint()))
+        forwarded = QWheelEvent(position, event.globalPosition(), event.pixelDelta(), event.angleDelta(),
+                                event.buttons(), event.modifiers(), event.phase(), event.inverted())
+        QApplication.sendEvent(viewport, forwarded)
+        return True
 
 
 def setup_appearance(application):
@@ -51,6 +77,9 @@ def setup_appearance(application):
                 QFontDatabase.addApplicationFont(str(path))
     application.setFont(QFont('Microsoft YaHei UI', 10))
     application.setStyleSheet(STYLE)
+    guard = WheelGuard(application)
+    application.installEventFilter(guard)
+    application.wheel_guard = guard
 
 
 def label(text, name=None, wrap=False):
@@ -182,7 +211,7 @@ class ImageView(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(200, 180)
         self.setText('选择图像后在此预览')
-        self.setStyleSheet('background: #f1f5f7; color: #79909f; border-radius: 5px;')
+        self.setStyleSheet('background: #F2F2F5; color: #8A8A92; border-radius: 10px;')
 
     def load(self, path):
         reader = QImageReader(str(path))
@@ -425,16 +454,20 @@ class ProjectPage(QWidget):
         self.result_roots = []
         self.scan_generation = 0
         self.result_generation = 0
+        self.input_total = None
         self.setObjectName('workspace')
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(26, 22, 26, 18)
+        layout.setContentsMargins(28, 24, 28, 16)
         head = QHBoxLayout()
+        head.setSpacing(8)
         titles = QVBoxLayout()
+        titles.setSpacing(2)
         titles.addWidget(label(project.subtitle, 'eyebrow'))
         titles.addWidget(label(project.title, 'title'))
         head.addLayout(titles, 1)
         self.status = label('就绪', 'status')
         head.addWidget(self.status, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addSpacing(8)
         self.save_button = button('保存项目', self.save_project)
         head.addWidget(button('打开项目', self.open_project))
         head.addWidget(self.save_button)
@@ -449,18 +482,24 @@ class ProjectPage(QWidget):
         control_layout = QVBoxLayout(self.controls)
         control_layout.setContentsMargins(0, 0, 9, 0)
         controls_scroll.setWidget(self.controls)
-        controls_scroll.setMinimumWidth(310)
+        controls_scroll.setMinimumWidth(300)
         io, form = self.group('01  输入与输出')
+        self.io_form = form
         self.path_field(form, 'input', '输入目录', directory=True)
         if project.key in ('Ra', 'Raman'):
-            modes = [('使用界面中的项目配置', 'config'), ('扫描目录 / 单独处理', 'directory')]
-            if project.key == 'Raman':
-                modes.append(('基准对比分析', 'compare'))
+            modes = ([('使用界面中的项目配置', 'config'), ('扫描目录 / 单独处理', 'directory')]
+                     if project.key == 'Ra' else
+                     [('堆叠对比（表格配置）', 'config'), ('单谱（扫描目录）', 'directory'),
+                      ('基准对比分析', 'compare'), ('拼图（实物图 + 各位置谱）', 'montage'),
+                      ('分层批次展示', 'batch_display')])
             self.combo(form, 'mode', '处理模式', modes)
+            if project.key == 'Raman':
+                self.config_field = self.path_field(form, 'config', '堆叠/对比配置表', file=True)
+                form.addRow(label('单谱/拼图/批次展示不需要该表；留空项由分析程序自动发现。', 'muted', True))
             form.addRow(label('在“数据与配置”直接编辑，或导入 JSON / Excel / CSV。', 'muted', True))
             self.mode_hint = label('', 'muted', True)
             form.addRow(self.mode_hint)
-            form.addRow(button('从输入目录追加样本', self.import_config))
+            form.addRow(button('从输入目录导入样本（可选替换/追加）', self.import_config))
         if project.key == 'ER':
             self.path_field(form, 'template', '模板（留空自动识别）', file=True)
         self.path_field(form, 'output', '结果父目录（每次新建独立运行）', directory=True)
@@ -474,16 +513,13 @@ class ProjectPage(QWidget):
             self.line(pf, 'batch', '每组数量', '留空处理全部启用行')
             self.check(pf, 'no_plot', '只计算，不生成图像')
         elif project.key == 'Raman':
-            self.line(pf, 'xmin', '区间下限 / cm⁻¹', '单谱必填；堆叠 / 对比可留空')
-            self.line(pf, 'xmax', '区间上限 / cm⁻¹', '单谱必填；堆叠 / 对比可留空')
+            self.raman_form = pf
+            self.line(pf, 'xmin', '区间下限 / cm⁻¹', '留空自动取数据波数范围')
+            self.line(pf, 'xmax', '区间上限 / cm⁻¹', '留空自动取数据波数范围')
             self.line(pf, 'height', '峰高阈值', '5；基准对比使用逐样品阈值')
-            self.line(pf, 'shift', '峰位校正 / cm⁻¹', '仅单谱和基准对比生效')
-            self.path_field(pf, 'compare_reference', '基准光谱 TXT', file=True,
-                            filters='TXT 光谱 (*.txt)')
-            self.line(pf, 'reference_height', '基准峰高阈值', '留空自动计算')
-            self.line(pf, 'compare_tolerance', '匹配容差 / cm⁻¹', '10')
-            self.check(pf, 'compare_normalize', '对比图逐谱归一化')
-            self.line(pf, 'zero_guard', '激光线排除半宽 / cm⁻¹', '50；0 表示关闭')
+            self.line(pf, 'shift', '峰位校正 / cm⁻¹', '仅单谱、拼图和基准对比生效')
+            self.mode_config_box = self.path_field(pf, 'mode_config',
+                                                   '拼图/批次配置表（留空自动发现）', file=True)
         elif project.key == 'CLSM':
             self.combo(pf, 'input_format', '输入格式', [('自动 / 同名TXT优先', 'auto'), ('仅TXT', 'txt'), ('仅LSM', 'lsm')])
             self.line(pf, 'count', '取样分区数')
@@ -495,8 +531,18 @@ class ProjectPage(QWidget):
         else:
             pf.addRow(label('保留完整票据名称、模板样式和合并单元格。\n生成当天日期；品名与金额请在结果中复核。', 'muted', True))
         control_layout.addWidget(params)
+        if project.key == 'Raman':
+            advanced, af = self.advanced_group('高级设置：基准对比与激光线排除（点击展开）')
+            self.raman_advanced = af
+            self.path_field(af, 'compare_reference', '基准光谱 TXT', file=True,
+                            filters='TXT 光谱 (*.txt)')
+            self.line(af, 'reference_height', '基准峰高阈值', '留空自动计算')
+            self.line(af, 'compare_tolerance', '匹配容差 / cm⁻¹', '10')
+            self.check(af, 'compare_normalize', '对比图逐谱归一化')
+            self.line(af, 'zero_guard', '激光线排除半宽 / cm⁻¹', '50；0 表示关闭')
+            control_layout.addWidget(advanced)
         if project.key == 'CLSM':
-            calibrate, cf = self.group('LSM 高度标定')
+            calibrate, cf = self.advanced_group('高级设置：LSM 高度标定（未确认前保持默认）')
             self.combo(cf, 'lsm_mode', '标定策略', [('要求外部标定', 'require-calibration'), ('待核验试算', 'metadata-pending')])
             self.line(cf, 'scale', '有符号比例 / µm', '未确认请留空')
             self.line(cf, 'offset', '高度偏移 / µm')
@@ -516,8 +562,11 @@ class ProjectPage(QWidget):
         self.files.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.files.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.files.setAlternatingRowColors(True)
-        self.files.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.files.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        files_header = self.files.horizontalHeader()
+        files_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        files_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        files_header.resizeSection(1, 90)
+        files_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.input_preview = None
         if project.key == 'ER':
             input_split = QSplitter(Qt.Orientation.Horizontal)
@@ -526,7 +575,7 @@ class ProjectPage(QWidget):
             self.files.setMinimumWidth(180)
             input_split.addWidget(self.files)
             input_split.addWidget(self.input_preview)
-            input_split.setSizes([280, 520])
+            input_split.setSizes([380, 440])
             fl.addWidget(input_split, 1)
             self.files.currentCellChanged.connect(self.select_input)
         else:
@@ -574,6 +623,7 @@ class ProjectPage(QWidget):
         self.result_caption = label('选择一次运行查看其实际生成的文件', 'muted')
         rt.addWidget(self.result_caption, 1)
         rt.addWidget(button('刷新结果', self.refresh_results))
+        rt.addWidget(button('创建 SCI-Pic 副本', self.send_result_to_scipic))
         rl.addLayout(rt)
         results_split = QSplitter(Qt.Orientation.Horizontal)
         self.results = QListWidget()
@@ -590,7 +640,15 @@ class ProjectPage(QWidget):
         split.addWidget(self.tabs)
         split.setSizes([360, 740])
         split.setStretchFactor(1, 1)
-        layout.addWidget(split, 1)
+        split.setChildrenCollapsible(False)
+        # 窄窗口（1366×768 在 125% 缩放下约 1093×614）放不下时横向滚动，而不是把检查器裁掉。
+        body = QScrollArea()
+        body.setObjectName('pageBody')
+        body.setWidgetResizable(True)
+        body.setFrameShape(QFrame.Shape.NoFrame)
+        body.setWidget(split)
+        self.body_scroll = body
+        layout.addWidget(body, 1)
 
         action = QHBoxLayout()
         action.addWidget(button('打开项目目录', lambda: open_path(self.root / project.key)))
@@ -598,6 +656,10 @@ class ProjectPage(QWidget):
         self.log_toggle = button('展开运行日志', self.toggle_log)
         action.addWidget(self.log_toggle)
         action.addStretch()
+        self.task_caption = label('', 'muted')
+        action.addWidget(self.task_caption)
+        self.timing_label = label('', 'muted')
+        action.addWidget(self.timing_label)
         self.save_state_label = label('配置已就绪', 'muted')
         action.addWidget(self.save_state_label)
         self.run_button = button('开始分析', self.start_analysis, True)
@@ -607,6 +669,10 @@ class ProjectPage(QWidget):
         self.progress.setTextVisible(False)
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
+        self.clock = QTimer(self)
+        self.clock.setInterval(1000)
+        self.clock.timeout.connect(self.tick_clock)
+        self.run_started = None
         logs_head = QHBoxLayout()
         logs_head.addWidget(label('运行日志', 'eyebrow'))
         logs_head.addStretch()
@@ -651,6 +717,35 @@ class ProjectPage(QWidget):
             self.logs_container.show()
         self.refresh_history()
 
+    def advanced_group(self, title):
+        """可折叠的低频参数区：默认收起，避免常用任务被一屏无关字段淹没。"""
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        toggle = QToolButton()
+        toggle.setObjectName('advanced_toggle')
+        toggle.setText(title)
+        toggle.setCheckable(True)
+        toggle.setChecked(False)
+        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toggle.setArrowType(Qt.ArrowType.RightArrow)
+        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        body = QGroupBox()
+        form = QFormLayout(body)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        form.setVerticalSpacing(9)
+        body.setVisible(False)
+
+        def sync(checked):
+            body.setVisible(checked)
+            toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+
+        toggle.toggled.connect(sync)
+        outer.addWidget(toggle)
+        outer.addWidget(body)
+        return container, form
+
     def group(self, title):
         group = QGroupBox(title)
         form = QFormLayout(group)
@@ -690,6 +785,7 @@ class ProjectPage(QWidget):
         choose_button.setMaximumWidth(56)
         row.addWidget(choose_button)
         form.addRow(title, box)
+        return box
 
     def combo(self, form, key, title, choices):
         widget = QComboBox()
@@ -710,6 +806,54 @@ class ProjectPage(QWidget):
             values[key] = widget.currentData() if isinstance(widget, QComboBox) else widget.isChecked() if isinstance(widget, QCheckBox) else widget.text().strip()
         return values
 
+    def task_caption_text(self):
+        """一行说明本次要跑什么：模式、关键输入限制和输出位置，不展开方法学。"""
+        try:
+            values = self.values()
+        except Exception:
+            return ''
+
+        def name(key):
+            value = str(values.get(key, '') or '').strip()
+            return Path(value).name or value or '未选择'
+
+        if self.project.key == 'Raman':
+            mode = values.get('mode', 'config')
+            label = {'config': '堆叠对比', 'directory': '单谱扫描', 'compare': '基准对比',
+                     'montage': '拼图', 'batch_display': '分层批次展示'}.get(mode, mode)
+            table = ''
+            if mode in ('config', 'compare'):
+                table = f' · {name("config")}'
+            elif mode in ('montage', 'batch_display') and str(values.get('mode_config', '')).strip():
+                table = f' · {name("mode_config")}'
+            elif mode == 'directory':
+                table = ' · 区间自动'
+            return f'本次任务：{label} · 输出 {name("output")}{table}'
+        if self.project.key == 'CLSM':
+            fmt = {'auto': 'TXT/LSM 自动', 'txt': '仅 TXT', 'lsm': '仅 LSM'}.get(values.get('input_format'), '输入格式待定')
+            calib = '要求外部标定' if values.get('lsm_mode') == 'require-calibration' else '待核验试算'
+            return f'本次任务：槽宽/槽深 · {fmt} · {calib} · 不清理 out'
+        if self.project.key == 'Ra':
+            mode = '界面启用行' if values.get('mode') == 'config' else '扫描目录'
+            return f'本次任务：Ra 粗糙度 · {mode} · 输出 {name("output")}'
+        if self.project.key == 'ER':
+            return f'本次任务：验收单 · 输出 {name("output")}（每次新建，不覆盖）· 品名与金额需人工复核'
+        return f'本次任务：SCI-Pic · 输出 {name("output")}'
+
+    def refresh_caption(self):
+        if hasattr(self, 'task_caption'):
+            text = self.task_caption_text()
+            if getattr(self, 'input_total', None):
+                text += f' · {self.input_total} 份输入'
+            self.task_caption.setText(text)
+            self.task_caption.setToolTip(text)
+
+    def tick_clock(self):
+        if self.run_started is None:
+            return
+        elapsed = int((datetime.now() - self.run_started).total_seconds())
+        self.timing_label.setText(f'已运行 {elapsed} 秒')
+
     def mode_changed(self):
         mode = self.fields['mode'].currentData()
         configured = mode == 'config'
@@ -719,10 +863,16 @@ class ProjectPage(QWidget):
                                    '目录扫描不读取项目表格，DAT去噪和高通默认关闭。')
         elif mode == 'compare':
             self.mode_hint.setText('一个基准谱对多个启用样品；逐样品峰阈值，归一化、容差和区间为全局设置。')
+        elif mode == 'montage':
+            self.mode_hint.setText('每个样品一张图：上方实物照片，下方该样品各位置的谱；'
+                                   '不填配置表时按 <组名>-1-1 图片与 <组名>-<序号> TXT 自动配对。')
+        elif mode == 'batch_display':
+            self.mode_hint.setText('多个基准 × 两组 × 多点位的分层展示：总览 → 单点 → 重复 → 对照 → 指标，'
+                                   '生成可离线打开的 index.html；区间可选，峰高阈值不参与。')
         elif configured:
             self.mode_hint.setText('堆叠只做视觉对照；归一化、顺序和逐行参数由界面配置。')
         else:
-            self.mode_hint.setText('单谱模式请填写波数上下限；扫描目录不读取项目表格。')
+            self.mode_hint.setText('单谱模式区间留空则自动使用输入数据的波数范围；扫描目录不读取项目表格。')
         if self.editor:
             self.editor.document.options = self.values()
             self.editor.sync_mode()
@@ -730,31 +880,41 @@ class ProjectPage(QWidget):
                                    (not self.task or self.task.completed))
         if self.project.key == 'Raman':
             compare = mode == 'compare'
-            self.fields['shift'].setEnabled(mode != 'config')
-            self.fields['height'].setEnabled(not compare)
+            needs_table = mode in ('config', 'compare')
+            needs_auto_config = mode in ('montage', 'batch_display')
+            self.fields['shift'].setEnabled(mode in ('directory', 'compare', 'montage'))
+            self.fields['height'].setEnabled(mode in ('config', 'directory', 'montage'))
+            self.fields['zero_guard'].setEnabled(mode in ('config', 'directory', 'montage'))
             for key in ('compare_reference', 'reference_height', 'compare_tolerance',
-                        'compare_normalize', 'zero_guard'):
+                        'compare_normalize'):
                 self.fields[key].setEnabled(compare)
+            self.set_row_visible(self.io_form, self.config_field, needs_table)
+            self.set_row_visible(self.raman_form, self.mode_config_box, needs_auto_config)
+            self.sync_mode_table(mode)
             reference = self.fields['compare_reference']
             reference.setToolTip('选择基准光谱 TXT；匹配只表示峰位差在容差内，不代表物相鉴定。'
                                  if compare else '仅在基准对比模式使用')
+        self.refresh_caption()
+
+    def sync_mode_table(self, mode):
+        """堆叠/基准对比各用一张表；当前仍是另一模式的默认表时自动切到该模式的表。"""
+        widget = self.fields['config']
+        current = Path(widget.text().strip())
+        target = self.root / self.project.key / ('stack.xlsx' if mode == 'config' else 'compare.xlsx')
+        if mode not in ('config', 'compare') or current.name not in ('stack.xlsx', 'compare.xlsx'):
+            return
+        if target.is_file() and current.resolve() != target.resolve():
+            widget.setText(str(target))
+
+    def set_row_visible(self, form, widget, visible):
+        row, _role = form.getWidgetPosition(widget)
+        if row >= 0:
+            form.setRowVisible(row, bool(visible))
 
     def import_config(self):
         if self.preparing or (self.task and not self.task.completed) or not self.editor:
             return
-        try:
-            source = as_path(self.values()['input'], self.root)
-            if not source.is_dir():
-                raise ValueError('请先选择存在的输入目录。')
-            matches = [p for p in source.iterdir() if p.is_file() and p.suffix.casefold() in self.project.extensions]
-            paths = (sorted(matches, key=lambda p: natural_key(p.name))
-                     if self.project.key == 'Raman' else sorted(matches))
-            self.editor.document.options = self.values()
-            added = self.editor.add_paths(paths)
-            self.tabs.setCurrentWidget(self.editor)
-            self.window.statusBar().showMessage(f'追加 {added} 份新样本；原有参数及缺失行保留，请检查后保存项目。', 12000)
-        except (ValueError, OSError) as exc:
-            QMessageBox.information(self, '无法追加样本', str(exc))
+        self.editor.import_from_input()
 
     def tab_changed(self, index):
         if self.tabs.widget(index) is self.history_list.parentWidget():
@@ -767,9 +927,14 @@ class ProjectPage(QWidget):
         if not hasattr(self, 'save_state_label') or not hasattr(self, 'saved_options'):
             return
         dirty = self.dirty()
-        self.save_state_label.setText('有未保存修改' if dirty else '无未保存修改')
-        self.save_state_label.setStyleSheet('color:#a56c35;' if dirty else '')
-        self.save_button.setText('保存项目 *' if dirty else '保存项目')
+        # 顶部状态点 + 底部一句话；不靠星号标记，保存键在未保存时自己变成强调色。
+        self.save_state_label.setText('● 未保存修改' if dirty else '无未保存修改')
+        self.save_state_label.setStyleSheet(f'color:{WARNING};' if dirty else '')
+        self.save_button.setText('保存项目')
+        self.save_button.setProperty('dirty', dirty)
+        self.save_button.style().unpolish(self.save_button)
+        self.save_button.style().polish(self.save_button)
+        self.refresh_caption()
         if self.editor:
             values = self.values()
             if self.editor.document.options != values:
@@ -894,7 +1059,9 @@ class ProjectPage(QWidget):
                 self.append_log('输入检查：' + error + '\n')
                 return
             paths, truncated = result
+            self.input_total = len(paths)
             self.file_count.setText(f'{len(paths)} 份输入' + ('（仅显示前2000份）' if truncated else ''))
+            self.refresh_caption()
             self.file_count.setToolTip('')
             self.files.setRowCount(len(paths))
             for i, path in enumerate(paths):
@@ -966,11 +1133,26 @@ class ProjectPage(QWidget):
                 self.results.addItem(item)
             if paths:
                 self.results.setCurrentRow(0)
+            self.result_caption.setText(self.result_caption.text() + f'  ·  {len(paths)} 个产物')
         self.window.submit(find, done)
 
     def select_result(self, item, previous):
         if item:
             self.preview.show_file(item.data(Qt.ItemDataRole.UserRole))
+
+    def send_result_to_scipic(self):
+        item = self.results.currentItem()
+        if not item:
+            QMessageBox.information(self, 'SCI-Pic', '请先选择一个结果文件。')
+            return
+        raw_path = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        path = Path(raw_path)
+        if not path.is_file():
+            QMessageBox.warning(self, 'SCI-Pic', '所选结果文件当前不可用，请刷新结果后重试。')
+            return
+        record = self.current_record or {}
+        self.window.navigate_to_key('sci-pic')
+        self.window.scipic_page.accept_source(path, self.project.key, record.get('id', ''))
 
     def open_output(self):
         try:
@@ -1048,6 +1230,9 @@ class ProjectPage(QWidget):
         self.progress.setVisible(True)
         self.status.setText('运行中')
         self.status_changed.emit(self.project.key, '运行中')
+        self.run_started = datetime.now()
+        self.timing_label.setText('已运行 0 秒')
+        self.clock.start()
         if self.task:
             self.task.deleteLater()
         self.task = ProcessTask(self.root, command, self)
@@ -1063,6 +1248,11 @@ class ProjectPage(QWidget):
             self.mode_changed()
         self.run_button.setEnabled(True)
         self.progress.setVisible(False)
+        self.clock.stop()
+        if self.run_started is not None:
+            elapsed = int((datetime.now() - self.run_started).total_seconds())
+            self.timing_label.setText(f'本次耗时 {elapsed} 秒')
+            self.run_started = None
         self.status.setText('已完成' if code == 0 else '部分成功' if code == 2 and self.project.key == 'Raman' else '需检查日志')
         self.status_changed.emit(self.project.key, '已完成' if code == 0 else '需检查')
         if code != 0:
@@ -1101,14 +1291,647 @@ class ProjectPage(QWidget):
             QMessageBox.information(self, '运行日志', '开始分析后会生成独立日志文件。')
 
 
+SCI_STYLE_LABELS = {
+    'style_preset': ('样式预设', '留空继承；如 paper / presentation'),
+    'font': ('字体', '留空继承；中文字体名'),
+    'figure_title_font_size_pt': ('图标题字号 pt', '图上方标题'),
+    'axis_title_font_size_pt': ('轴标题字号 pt', '横轴/纵轴标题'),
+    'tick_font_size_pt': ('刻度字号 pt', '坐标刻度数字'),
+    'legend_font_size_pt': ('图例字号 pt', '图例文字'),
+    'value_label_font_size_pt': ('数值标注字号 pt', '柱顶数值'),
+    'peak_label_font_size_pt': ('峰值标注字号 pt', '峰位标注'),
+    'min_peak_label_font_size_pt': ('最小标注字号 pt', '自动缩放下限'),
+    'line_width_pt': ('线宽 pt', '折线与边框'),
+    'axis_line_width_pt': ('轴线宽 pt', '坐标轴线'),
+    'legend_location': ('图例位置', '留空继承；如 upper center'),
+    'legend_text_color': ('图例文字颜色', 'HEX 或颜色名'),
+    'series_colors': ('系列颜色', '逗号分隔的 HEX'),
+    'palette': ('配色方案', '如 academic / energy'),
+    'background_color': ('背景颜色', 'HEX 或颜色名'),
+    'grid_enabled': ('显示网格', '是 / 否'),
+    'grid_color': ('网格颜色', 'HEX 或颜色名'),
+    'dpi': ('分辨率 dpi', '位图输出精度'),
+    'output_formats': ('输出格式', '逗号分隔：png, pdf, svg'),
+}
+
+
+class SciPicPage(QWidget):
+    """SCI-Pic workbench page; no run starts until the user submits a request."""
+    def __init__(self, window, state=None):
+        super().__init__()
+        self.window = window
+        self.root = window.root
+        self.state = deepcopy(state) if isinstance(state, dict) else {}
+        self.entries = []
+        self.entry_cache = {}
+        self.current_prepared = None
+        self.current_record = None
+        self.task = None
+        self.preparing = False
+        self.log_path = None
+        self.editor = None
+        self.proposal = None
+        self.pending_source = None
+        self.pending_run_id = ''
+        self.output_root = self.root / 'sci-pic' / 'out'
+        self.setObjectName('workspace')
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        body = QScrollArea()
+        body.setObjectName('pageBody')
+        body.setWidgetResizable(True)
+        body.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        inner.setObjectName('workspace')
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(30, 24, 30, 24)
+        body.setWidget(inner)
+        outer.addWidget(body)
+        self.body = body
+        layout.addWidget(label('SCI-PIC  /  STYLE-AWARE FIGURES', 'eyebrow'))
+        layout.addWidget(label('SCI-Pic 学术绘图', 'title'))
+        layout.addWidget(label('工作副本与可选样式在同一页面完成；留空继承，不自动运行。', 'note', True))
+        self.tabs = QTabWidget()
+        input_page = QWidget()
+        input_layout = QVBoxLayout(input_page)
+        input_layout.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(input_page, '01  输入与示意图')
+        box = QGroupBox('01  输入与配置：模板、示意图与工作副本')
+        outer = QVBoxLayout(box)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self.template = QComboBox()
+        form.addRow('绘图模板', self.template)
+        self.workbook = QLineEdit()
+        self.workbook.setReadOnly(True)
+        self.workbook.setPlaceholderText('尚未创建工作副本；点“新建工作副本”生成到 sci-pic/out/workbooks/')
+        self.workbook.setToolTip('双击用系统默认程序（Excel / WPS）打开当前工作副本')
+        self.workbook.installEventFilter(self)
+        workbook_row = QWidget()
+        workbook_layout = QHBoxLayout(workbook_row)
+        workbook_layout.setContentsMargins(0, 0, 0, 0)
+        workbook_layout.setSpacing(8)
+        workbook_layout.addWidget(self.workbook, 1)
+        self.open_workbook_button = button('打开', self.open_workbook)
+        self.open_workbook_button.setMinimumWidth(64)
+        self.open_workbook_button.setEnabled(False)
+        workbook_layout.addWidget(self.open_workbook_button)
+        self.reveal_workbook_button = button('文件夹', self.reveal_workbook)
+        self.reveal_workbook_button.setMinimumWidth(64)
+        self.reveal_workbook_button.setEnabled(False)
+        self.reveal_workbook_button.setToolTip('打开工作副本所在的文件夹')
+        workbook_layout.addWidget(self.reveal_workbook_button)
+        self.workbook.textChanged.connect(self.sync_workbook_state)
+        form.addRow('工作簿副本', workbook_row)
+        self.output = QLineEdit(str(self.state.get('output', self.output_root)))
+        form.addRow('输出目录', self.output)
+        self.mapping = QLineEdit(','.join(sorted((self.state.get('mapping') or {}).keys())))
+        form.addRow('映射（类别,数值[,分组]）', self.mapping)
+        actions = QHBoxLayout()
+        actions.addWidget(button('新建工作副本', self.create_copy))
+        actions.addWidget(button('选择工作副本', self.choose_workbook))
+        self.recent_button = button('最近副本', self.show_recent)
+        self.recent_button.setToolTip('最近使用的工作副本，按时间倒序，最多 8 份')
+        actions.addWidget(self.recent_button)
+        actions.addWidget(button('打开输出目录', self.open_output))
+        actions.addStretch()
+        form.addRow(actions)
+        outer.addLayout(form)
+        card = QFrame()
+        card.setObjectName('previewCard')
+        card.setMaximumHeight(230)
+        card_layout = QHBoxLayout(card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setSpacing(14)
+        self.preview_image = QLabel('模板示意图加载中…')
+        self.preview_image.setObjectName('previewImage')
+        self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image.setFixedSize(176, 176)
+        self.preview_image.setWordWrap(True)
+        self.preview_image.setToolTip('缩略示意图：显示模板的版式与配色；坐标、图例文字请点“查看大图”。')
+        card_layout.addWidget(self.preview_image, 0, Qt.AlignmentFlag.AlignTop)
+        details = QVBoxLayout()
+        details.setSpacing(5)
+        details.addWidget(label('模板示意图', 'eyebrow'))
+        self.preview_title = label('', 'dataset')
+        details.addWidget(self.preview_title)
+        self.preview_type = label('', 'muted', True)
+        self.preview_type.setWordWrap(True)
+        details.addWidget(self.preview_type)
+        self.preview_desc = label('', 'methodNote', True)
+        self.preview_desc.setWordWrap(True)
+        details.addWidget(self.preview_desc)
+        self.preview_example = label('', 'muted', True)
+        self.preview_example.setWordWrap(True)
+        details.addWidget(self.preview_example)
+        details.addStretch()
+        card_actions = QHBoxLayout()
+        card_actions.addStretch()
+        card_actions.addWidget(button('查看大图', self.open_preview))
+        details.addLayout(card_actions)
+        card_layout.addLayout(details, 1)
+        outer.addWidget(card)
+        input_layout.addWidget(box)
+        input_layout.addStretch()
+        mapping_box = QGroupBox('02  关键设置：从分析结果创建工作副本（先确认列映射）')
+        mapping_form = QFormLayout(mapping_box)
+        self.map_category = QComboBox()
+        self.map_value = QComboBox()
+        self.map_group = QComboBox()
+        self.map_group.addItem('（无分组）', '')
+        mapping_form.addRow('类别列', self.map_category)
+        mapping_form.addRow('数值列', self.map_value)
+        mapping_form.addRow('分组列（可选）', self.map_group)
+        self.map_info = label('尚未选择源结果；原始 Raman 光谱不能直接映射为柱/折模板。', 'note', True)
+        mapping_form.addRow(self.map_info)
+        mapping_actions = QHBoxLayout()
+        mapping_actions.addWidget(button('确认映射并生成副本', self.confirm_mapping))
+        mapping_actions.addStretch()
+        mapping_form.addRow(mapping_actions)
+        self.tabs.setTabToolTip(0, '选模板、看示意图、创建工作副本')
+        style_box = QGroupBox('03  可选样式（SCI-Pic 字号/线宽 pt；分辨率 dpi）')
+        style_page = QWidget()
+        style_page_layout = QVBoxLayout(style_page)
+        style_page_layout.setContentsMargins(0, 6, 0, 0)
+        style_page_layout.addWidget(mapping_box)
+        style_page_layout.addWidget(style_box)
+        self.tabs.addTab(style_page, '02  映射与样式')
+        style_layout = QVBoxLayout(style_box)
+        self.style_table = QTableWidget(0, 3)
+        self.style_table.setHorizontalHeaderLabels(['参数', '填写值', '说明'])
+        self.style_table.verticalHeader().setVisible(False)
+        self.style_table.setMinimumHeight(160)
+        self.style_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        style_layout.addWidget(self.style_table)
+        self.strict = QCheckBox('未知样式键报错')
+        style_actions = QHBoxLayout()
+        style_actions.addWidget(self.strict)
+        style_actions.addWidget(button('从副本读取', self.load_style))
+        style_actions.addWidget(button('预览解析结果', self.preview_style))
+        style_actions.addWidget(button('打开解析结果', self.open_resolved))
+        style_actions.addStretch()
+        style_layout.addLayout(style_actions)
+        style_page_layout.addStretch()
+        run_box = QGroupBox('04  运行与结果')
+        run_layout = QVBoxLayout(run_box)
+        controls = QHBoxLayout()
+        self.run_button = button('开始绘图', self.run, True)
+        controls.addWidget(self.run_button)
+        controls.addWidget(button('打开运行日志', self.open_log))
+        controls.addStretch()
+        run_layout.addLayout(controls)
+        self.status = label('尚未运行；界面不会自动开始绘图。', 'muted')
+        run_layout.addWidget(self.status)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFixedHeight(150)
+        run_layout.addWidget(self.log)
+        self.results = QListWidget()
+        self.results.itemDoubleClicked.connect(self.open_result)
+        self.history_list = QListWidget()
+        self.history_list.itemSelectionChanged.connect(self.select_history)
+        run_layout.addWidget(label('历史运行（点击回看；可回到来源项目）', 'eyebrow'))
+        self.history_list.setFixedHeight(120)
+        run_layout.addWidget(self.history_list)
+        run_layout.addWidget(label('结果文件（双击打开）', 'eyebrow'))
+        self.results.setFixedHeight(120)
+        run_layout.addWidget(self.results)
+        self.back_source = button('回到来源项目', self.open_source_project)
+        controls.addWidget(self.back_source)
+        run_page = QWidget()
+        run_page_layout = QVBoxLayout(run_page)
+        run_page_layout.setContentsMargins(0, 6, 0, 0)
+        run_page_layout.addWidget(run_box)
+        self.tabs.addTab(run_page, '03  运行与结果')
+        layout.addWidget(self.tabs, 1)
+        try:
+            self.entries = sci_pic_services.catalog(self.root)
+            for entry in self.entries:
+                self.template.addItem(entry['title'], entry['id'])
+            self.template.currentIndexChanged.connect(self.refresh_preview)
+        except (OSError, ValueError) as exc:
+            self.status.setText('模板目录不可用：' + str(exc))
+        stored = self.state.get('style', {}) if isinstance(self.state.get('style', {}), dict) else {}
+        for field in sci_pic_services.style_rows():
+            title, help_text = SCI_STYLE_LABELS.get(field, (field, '留空继承'))
+            row = self.style_table.rowCount()
+            self.style_table.insertRow(row)
+            name = QTableWidgetItem(title)
+            name.setData(Qt.ItemDataRole.UserRole, field)
+            name.setToolTip(field)
+            self.style_table.setItem(row, 0, name)
+            self.style_table.setItem(row, 1, QTableWidgetItem(str(stored.get(field, ''))))
+            help_item = QTableWidgetItem(help_text)
+            help_item.setToolTip(field)
+            self.style_table.setItem(row, 2, help_item)
+        identifier = self.state.get('template_id', '')
+        index = self.template.findData(identifier)
+        if index >= 0:
+            self.template.setCurrentIndex(index)
+        if isinstance(self.state.get('workbook'), str) and Path(self.state['workbook']).is_file():
+            self.workbook.setText(self.state['workbook'])
+        self.output.setText(str(self.state.get('output', self.output_root)))
+        self.refresh_preview()
+
+    def refresh_preview(self, *_):
+        """Show the selected template's thumbnail, type and description."""
+        identifier = self.template.currentData()
+        entry = next((item for item in self.entries if item['id'] == identifier), None)
+        if entry is None:
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText('暂无模板示意图\n（模板目录不可用）')
+            self.preview_title.setText('')
+            self.preview_type.setText('')
+            self.preview_desc.setText('')
+            self.preview_example.setText('')
+            return
+        pixmap = self.entry_cache.get(entry['id'])
+        if pixmap is None:
+            pixmap = QPixmap(str(entry['preview']))
+            self.entry_cache[entry['id']] = pixmap
+        if pixmap.isNull():
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText('示意图文件无法读取：' + Path(entry['preview']).name)
+        else:
+            self.preview_image.setPixmap(pixmap.scaled(
+                QSize(176, 176), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        self.preview_image.setText('')
+        self.preview_title.setText(entry['title'])
+        self.preview_type.setText('类型：%s　·　图 %s' % (entry['plot_type'], Path(entry['preview']).name))
+        self.preview_desc.setText(entry['description'])
+        self.preview_example.setText('示例：' + entry['example'])
+
+    def open_preview(self):
+        try:
+            open_path(Path(self.entry()['preview']))
+        except ValueError as exc:
+            QMessageBox.information(self, '模板示意图', str(exc))
+
+    def entry(self):
+        identifier = self.template.currentData()
+        for item in self.entries:
+            if item['id'] == identifier:
+                return item
+        raise ValueError('请选择一个绘图模板。')
+
+    def values(self):
+        values = {}
+        for row in range(self.style_table.rowCount()):
+            text = self.style_table.item(row, 1).text().strip()
+            if text:
+                name = self.style_table.item(row, 0)
+                values[name.data(Qt.ItemDataRole.UserRole) or name.text()] = text
+        return values
+
+    def create_copy(self):
+        try:
+            path = sci_pic_services.working_copy(self.root, self.entry(), target_dir=self.output.text().strip())
+            if self.values():
+                sci_pic_services.add_style_rows(path, self.values(), root=self.root)
+            self.workbook.setText(str(path))
+            self.remember_workbook(path)
+            self.status.setText('已创建工作副本：' + path.name)
+            self.status.setToolTip(str(path))
+            # 新建副本的目的就是马上填数据；按 README 约定直接交给 Excel / WPS 打开。
+            open_path(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, '工作副本', str(exc))
+
+    def sync_workbook_state(self):
+        """有工作副本且文件存在时，“打开”“文件夹”才可点。"""
+        text = self.workbook.text().strip()
+        path = Path(text) if text else None
+        exists = bool(path) and path.is_file()
+        self.open_workbook_button.setEnabled(exists)
+        self.reveal_workbook_button.setEnabled(bool(path))
+        self.open_workbook_button.setToolTip(str(path) if exists else '还没有可打开的工作副本')
+        self.reveal_workbook_button.setToolTip(
+            str(path.parent) if path else '打开工作副本所在的文件夹')
+        if text:
+            # 只读框默认把光标停在末尾，长路径只能看到文件名尾部；回到行首才能从根目录读起。
+            self.workbook.setCursorPosition(0)
+
+    def open_workbook(self):
+        text = self.workbook.text().strip()
+        if not text:
+            QMessageBox.information(self, '工作副本', '还没有工作副本。先点“新建工作副本”，或用“选择工作副本”指定一份。')
+            return
+        path = Path(text)
+        if not path.is_file():
+            QMessageBox.information(self, '工作副本', f'找不到文件：{path}\n可以重新“新建工作副本”，或用“选择工作副本”重新指定。')
+            return
+        open_path(path)
+
+    def reveal_workbook(self):
+        text = self.workbook.text().strip()
+        folder = Path(text).parent if text else self.root / 'sci-pic' / 'out' / 'workbooks'
+        if folder.is_dir():
+            open_path(folder)
+        else:
+            QMessageBox.information(self, '工作副本', f'文件夹还不存在：{folder}')
+
+    def remember_workbook(self, path):
+        """把副本记进本次会话的最近列表（去重、最多 8 条），随 state 一起持久化。"""
+        text = str(path)
+        items = [str(p) for p in (self.state.get('recent_workbooks') or []) if str(p).strip()]
+        self.state['recent_workbooks'] = [text] + [p for p in items if p != text][:7]
+
+    def recent_paths(self):
+        """当前副本 → 历史列表 → 输出目录/工作副本目录里按时间倒序的 .xlsx，去重后最多 8 条。"""
+        seen = []
+        current = self.workbook.text().strip()
+        if current and Path(current).is_file():
+            seen.append(current)
+        for item in self.state.get('recent_workbooks') or []:
+            text = str(item).strip()
+            if text and text not in seen and Path(text).is_file():
+                seen.append(text)
+        folders = []
+        try:
+            folders.append(as_path(self.output.text().strip() or str(self.output_root), self.root))
+        except (OSError, ValueError):
+            pass
+        folders.append(self.output_root / 'workbooks')
+        found = []
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            try:
+                for path in folder.glob('*.xlsx'):
+                    if path.is_file():
+                        found.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        for _, path in sorted(found, key=lambda pair: pair[0], reverse=True):
+            text = str(path)
+            if text not in seen:
+                seen.append(text)
+        return [Path(p) for p in seen][:8]
+
+    def use_recent(self, path):
+        self.workbook.setText(str(path))
+        self.remember_workbook(path)
+        self.load_style()
+
+    def show_recent(self):
+        menu = QMenu(self)
+        paths = self.recent_paths()
+        if not paths:
+            empty = menu.addAction('还没有历史副本')
+            empty.setEnabled(False)
+        else:
+            for path in paths:
+                try:
+                    stamp = datetime.fromtimestamp(path.stat().st_mtime).strftime('%m-%d %H:%M')
+                except OSError:
+                    stamp = ''
+                action = menu.addAction(f'{path.name}    {stamp}' if stamp else path.name)
+                action.setToolTip(str(path))
+                action.triggered.connect(lambda _checked=False, target=path: self.use_recent(target))
+            menu.addSeparator()
+            menu.addAction('打开工作副本目录').triggered.connect(self.reveal_workbook)
+        menu.exec(self.recent_button.mapToGlobal(self.recent_button.rect().bottomLeft()))
+
+    def eventFilter(self, watched, event):
+        if watched is self.workbook and event.type() == QEvent.Type.MouseButtonDblClick:
+            self.open_workbook()
+            return True
+        return super().eventFilter(watched, event)
+
+    def choose_workbook(self):
+        path, _ = QFileDialog.getOpenFileName(self, '选择 SCI-Pic 工作副本', str(self.root / 'sci-pic' / 'out'), 'Excel 工作簿 (*.xlsx *.xlsm)')
+        if path:
+            self.workbook.setText(path)
+            self.remember_workbook(path)
+            self.load_style()
+
+    def load_style(self):
+        path = self.workbook.text().strip()
+        if not path or not Path(path).is_file():
+            QMessageBox.information(self, '样式配置', '请先创建或选择工作副本。')
+            return
+        try:
+            settings, locations = sci_pic_services.inspect_style(path)['settings'], sci_pic_services.inspect_style(path)['locations']
+            for row in range(self.style_table.rowCount()):
+                name = self.style_table.item(row, 0)
+                field = name.data(Qt.ItemDataRole.UserRole) or name.text()
+                self.style_table.item(row, 1).setText('' if settings.get(field) in (None, '') else str(settings[field]))
+            self.status.setText('已读取 %d 个样式单元。' % len(locations))
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, '样式配置', str(exc))
+
+    def preview_style(self):
+        try:
+            payload = sci_pic_services.validate_style(self.root, workbook=self.workbook.text().strip() or None,
+                                                       overrides=self.values(), strict=self.strict.isChecked())
+            self.status.setText('解析成功：%d 个字段；schema %s' % (len(payload['values']), payload['schema_version']))
+            self.append_log(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+        except Exception as exc:
+            self.status.setText('样式解析失败')
+            QMessageBox.warning(self, '样式解析', str(exc))
+
+    def open_output(self):
+        open_path(as_path(self.output.text().strip() or str(self.output_root), self.root))
+
+    def open_resolved(self):
+        path = (self.current_record or {}).get('resolved_config', '')
+        if path and Path(path).is_file():
+            open_path(Path(path))
+        else:
+            QMessageBox.information(self, '解析结果', '本次运行尚未生成 resolved_config.json。')
+
+    def open_log(self):
+        if self.log_path and Path(self.log_path).is_file():
+            open_path(Path(self.log_path))
+        else:
+            QMessageBox.information(self, '运行日志', '开始运行后会生成独立日志。')
+
+    def open_result(self, item):
+        path = Path(item.text())
+        if path.exists():
+            open_path(path)
+
+    def append_log(self, text):
+        cursor = self.log.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(text)
+        self.log.setTextCursor(cursor)
+
+    def refresh_results(self):
+        self.results.clear()
+        for path in (self.current_record or {}).get('files', []):
+            if Path(path).is_file():
+                self.results.addItem(path)
+
+    def accept_source(self, path, source_project='', source_run_id=''):
+        """Called from another module's result list; mapping proposal runs off the Qt thread."""
+        self.pending_source = str(path)
+        self.pending_run_id = source_run_id
+        self._source_project = source_project
+
+        def worker():
+            return sci_pic_services.propose_mapping(path, source_project)
+
+        def done(proposal, error):
+            if error:
+                self.map_info.setText('无法识别源结果：' + error)
+                return
+            self.proposal = proposal
+            self._fill_mapping(proposal)
+
+        self.window.submit(worker, done)
+
+    def _fill_mapping(self, proposal):
+        self.map_category.clear()
+        self.map_value.clear()
+        self.map_group.clear()
+        self.map_group.addItem('（无分组）', '')
+        for col in proposal['category_candidates']:
+            self.map_category.addItem(col, col)
+        for col in proposal['value_candidates']:
+            self.map_value.addItem(col, col)
+        for col in proposal['group_candidates']:
+            self.map_group.addItem(col, col)
+        if not proposal['supported']:
+            self.map_info.setText(proposal['reason'])
+            return
+        self.map_info.setText(
+            f"可映射 {proposal['rows']} 行；忽略 {proposal['ignored']} 行；"
+            f"错误 {len(proposal['errors'])} 行。{proposal['reason']}")
+
+    def confirm_mapping(self):
+        if not self.proposal or not self.pending_source:
+            QMessageBox.information(self, '列映射', '请先从分析结果选择要制图的源文件。')
+            return
+        mapping = {'category': self.map_category.currentData(),
+                   'value': self.map_value.currentData(),
+                   'group': self.map_group.currentData() or ''}
+        entry = self.entry()
+
+        def worker():
+            return sci_pic_services.create_work_copy_from_mapping(
+                self.root, entry, self.pending_source,
+                getattr(self, '_source_project', ''), self.pending_run_id, mapping,
+                target_dir=self.output.text().strip() or None, style_values=self.values())
+
+        def done(result, error):
+            self.preparing = False
+            if error:
+                self.map_info.setText('工作副本生成失败：' + error)
+                QMessageBox.warning(self, '工作副本', error)
+                return
+            self.workbook.setText(str(result['workbook']))
+            self.map_info.setText(f"已生成副本：{result['row_count']} 行；忽略 {result['ignored']} 行。")
+            self.current_record = {'manifest_path': str(result['manifest_path'])}
+
+        self.preparing = True
+        self.window.submit(worker, done)
+
+    def refresh_history(self):
+        self.history_list.clear()
+        for record in history(self.root, 'sci-pic'):
+            title = f"{record.get('started', '')} · {record.get('template_title', '')} · {record.get('status', '')}"
+            item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, record)
+            self.history_list.addItem(item)
+
+    def select_history(self):
+        item = self.history_list.currentItem()
+        if not item:
+            return
+        record = item.data(Qt.ItemDataRole.UserRole)
+        self.current_record = record
+        self.refresh_results()
+        if record.get('source_project'):
+            self.map_info.setText(
+                f"来源项目：{record['source_project']}；运行记录：{record.get('source_run_id', '') or '—'}")
+
+    def open_source_project(self):
+        record = self.current_record or {}
+        project = record.get('source_project')
+        if project:
+            self.window.navigate_to_key(project)
+        else:
+            QMessageBox.information(self, '来源项目', '本次记录没有可回溯的来源项目。')
+
+    def run(self):
+        if self.task and not self.task.completed:
+            return
+        if self.preparing:
+            return
+        try:
+            source = self.workbook.text().strip()
+            if not source or not Path(source).is_file():
+                raise ValueError('请先创建或选择工作副本。')
+            manifest_path = (self.current_record or {}).get('manifest_path', '')
+            source_project = getattr(self, '_source_project', '')
+            source_run_id = self.pending_run_id
+
+            def ready(prepared, error):
+                self.preparing = False
+                if error:
+                    self.status.setText('准备失败')
+                    QMessageBox.warning(self, '无法开始绘图', error)
+                    return
+                self.current_prepared, self.current_record = prepared, prepared.record
+                prepared.record['status'] = 'running'
+                save_record(prepared)
+                self.launch(prepared.command)
+            self.preparing = True
+            self.window.submit(lambda: sci_pic_services.prepare_plot(
+                self.root, self.entry(), source, self.output.text().strip() or str(self.output_root),
+                style_config=source, style_overrides=self.values(), style_strict=self.strict.isChecked(),
+                source_project=source_project, source_run_id=source_run_id, manifest_path=manifest_path), ready)
+        except (OSError, ValueError) as exc:
+            self.preparing = False
+            self.status.setText('启动失败')
+            QMessageBox.warning(self, '无法开始绘图', str(exc))
+
+    def launch(self, command):
+        self.window.save_state()
+        self.log.clear()
+        self.status.setText('运行中')
+        if self.task:
+            self.task.deleteLater()
+        self.task = ProcessTask(self.root, command, self)
+        self.task.output.connect(self.append_log)
+        def finished(code, message):
+            self.log_path = self.task.log_path
+            self.status.setText('已完成' if code == 0 else '需检查日志')
+            self.append_log(message + '\n')
+            if self.current_prepared:
+                def recorded(record, error):
+                    if not error:
+                        self.current_record = record
+                        self.refresh_results()
+                        self.refresh_history()
+                    else:
+                        self.append_log('运行记录未能完整保存：' + error + '\n')
+                self.window.submit(lambda: finish_run(self.current_prepared, code, message, self.log_path), recorded)
+        self.task.finished.connect(finished)
+        self.task.start()
+
+    def state_values(self):
+        return {'template_id': self.template.currentData(), 'workbook': self.workbook.text().strip(),
+                'output': self.output.text().strip(), 'style': self.values(),
+                'recent_workbooks': [str(p) for p in (self.state.get('recent_workbooks') or [])],
+                'style_strict': self.strict.isChecked()}
+
+    def dirty(self):
+        return False
+
+
 class Window(QMainWindow):
     def __init__(self, root):
         super().__init__()
         self.root = root.resolve()
         self.setWindowTitle('Data Analysis · 实验数据工作台')
         available = QApplication.primaryScreen().availableGeometry()
-        self.setMinimumSize(1050, 680)
-        self.resize(min(1480, max(1050, available.width()-64)), min(960, max(680, available.height()-80)))
+        self.setMinimumSize(940, 560)
+        # 常见 1366×768 在 125% 缩放下只有 1093×614 的逻辑空间，初始尺寸不能按 1050×680 硬顶。
+        self.resize(min(1480, max(940, available.width() - 64)),
+                    min(960, max(560, available.height() - 90)))
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.workers = {}
@@ -1129,20 +1952,22 @@ class Window(QMainWindow):
         row.setSpacing(0)
         sidebar = QFrame()
         sidebar.setObjectName('sidebar')
-        sidebar.setFixedWidth(222)
+        sidebar.setFixedWidth(232)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(0, 28, 0, 20)
-        brand = label('Data\nAnalysis.', 'brand')
-        brand.setContentsMargins(25, 0, 0, 8)
+        side.setContentsMargins(0, 26, 0, 18)
+        brand = label('Data Analysis.', 'brand')
+        brand.setContentsMargins(24, 0, 0, 2)
         side.addWidget(brand)
-        small = label('实验数据工作台  /  DESKTOP', 'muted')
-        small.setContentsMargins(26, 0, 0, 20)
+        small = label('EXPERIMENT WORKBENCH', 'muted')
+        small.setContentsMargins(26, 0, 0, 18)
         side.addWidget(small)
         self.navigation = QListWidget()
         self.navigation.setObjectName('navigation')
+        self.navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.navigation.addItem('工作台概览')
         for project in PROJECTS:
             self.navigation.addItem(f'{project.key}    {project.title}')
+        self.navigation.addItem('sci-pic    SCI-Pic 学术绘图')
         self.navigation.addItem('环境与设置')
         side.addWidget(self.navigation, 1)
         footer = label('LOCAL WORKSPACE\n本地处理 · 原始数据只读', 'muted')
@@ -1170,11 +1995,27 @@ class Window(QMainWindow):
             page.status_changed.connect(self.project_status)
             self.pages[project.key] = page
             self.stack.addWidget(page)
+        scipic_state = self.state.get('sci-pic', {})
+        self.scipic_page = SciPicPage(self, scipic_state if isinstance(scipic_state, dict) else {})
+        self.pages['sci-pic'] = self.scipic_page
+        self.stack.addWidget(self.scipic_page)
         self.stack.addWidget(self.make_environment())
         self.navigation.currentRowChanged.connect(self.navigate)
         self.navigation.setCurrentRow(0)
         self.save_shortcut = QShortcut(QKeySequence.StandardKey.Save, self)
         self.save_shortcut.activated.connect(self.save_current_project)
+        self.run_shortcut = QShortcut(QKeySequence('Ctrl+R'), self)
+        self.run_shortcut.activated.connect(self.start_current_run)
+
+    def start_current_run(self):
+        """Ctrl+R：把焦点留在键盘上也能启动当前页面的分析。"""
+        current = self.stack.currentWidget()
+        if isinstance(current, ProjectPage):
+            if current.run_button.isEnabled():
+                current.run_button.click()
+        elif isinstance(current, SciPicPage):
+            if current.run_button.isEnabled():
+                current.run_button.click()
 
     def save_current_project(self):
         current = self.stack.currentWidget()
@@ -1205,8 +2046,24 @@ class Window(QMainWindow):
             page = self.pages[PROJECTS[index - 1].key]
             page.refresh_inputs()
             page.refresh_results()
+        elif index == len(PROJECTS) + 1:
+            self.scipic_page.refresh_results()
+
+    def navigate_to_key(self, key):
+        """Key-based navigation used by cross-module back-to-source links."""
+        if key == 'sci-pic':
+            self.navigation.setCurrentRow(len(PROJECTS) + 1)
+            return
+        for offset, project in enumerate(PROJECTS, 1):
+            if project.key == key:
+                self.navigation.setCurrentRow(offset)
+                return
 
     def make_home(self):
+        page = QScrollArea()
+        page.setObjectName('pageBody')
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.Shape.NoFrame)
         widget = QWidget()
         widget.setObjectName('workspace')
         layout = QVBoxLayout(widget)
@@ -1233,16 +2090,33 @@ class Window(QMainWindow):
             enter.addWidget(button('进入项目', lambda checked=False, n=index: self.navigation.setCurrentRow(n)))
             content.addLayout(enter)
             grid.addWidget(card, (index-1)//2, (index-1)%2)
+        # 卡片最小高度不会被网格自动带进行高，显式给每行定高，避免圆角边框互相压住。
+        for row in range((len(PROJECTS) + 1) // 2):
+            grid.setRowMinimumHeight(row, 208)
+        card = QGroupBox()
+        card.setObjectName('homeCard')
+        card.setMinimumHeight(208)
+        content = QVBoxLayout(card)
+        content.setContentsMargins(23, 19, 23, 21)
+        content.addWidget(label('05   /   SCI-PIC  /  STYLE-AWARE FIGURES', 'eyebrow'))
+        content.addWidget(label('SCI-Pic 学术绘图', 'cardTitle'))
+        content.addWidget(label('模板工作副本与可选样式配置；未填写样式时保持旧版外观。', 'muted', True), 1)
+        enter = QHBoxLayout()
+        enter.addStretch()
+        enter.addWidget(button('进入项目', lambda checked=False, n=len(PROJECTS)+1: self.navigation.setCurrentRow(n)))
+        content.addLayout(enter)
+        grid.addWidget(card, len(PROJECTS)//2, len(PROJECTS)%2)
         layout.addLayout(grid)
         layout.addStretch()
         layout.addWidget(label('开始之前', 'eyebrow'))
         layout.addWidget(label('配置直接在窗口中编辑并保存。每次 GUI 分析使用独立目录，保留输入摘要、配置快照与运行日志。\n原始数据只读；计算结果用于报告或报销前仍需核对。', 'note', True))
-        return widget
+        page.setWidget(widget)
+        return page
 
     def make_environment(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(35, 30, 35, 25)
+        layout.setContentsMargins(28, 24, 28, 20)
         layout.addWidget(label('WORKSPACE SETTINGS', 'eyebrow'))
         layout.addWidget(label('环境与设置', 'title'))
         layout.addWidget(label('本地运行，无需启动服务或登录账户。基础检查不会运行分析，也不会清理结果。', 'note', True))
@@ -1261,10 +2135,13 @@ class Window(QMainWindow):
         actions.addWidget(button('项目说明', lambda: open_path(self.root / 'README.md')))
         actions.addStretch()
         layout.addLayout(actions)
+        layout.addWidget(label('检查输出', 'eyebrow'))
         self.check_log = QPlainTextEdit()
         self.check_log.setReadOnly(True)
+        self.check_log.setMaximumHeight(220)
         self.check_log.setPlaceholderText('点击“运行环境检查”，核对便携解释器、依赖、源码语法与启动器格式。')
-        layout.addWidget(self.check_log, 1)
+        layout.addWidget(self.check_log)
+        layout.addStretch()
         self.check_task = None
         return widget
 
@@ -1293,7 +2170,7 @@ class Window(QMainWindow):
 
     def check_conflicts(self, key, command):
         for other, page in self.pages.items():
-            if other == key or not page.task or page.task.completed:
+            if other == key or not getattr(page, 'task', None) or page.task.completed:
                 continue
             for new in command.results:
                 for old in page.task.command.results:
@@ -1309,15 +2186,19 @@ class Window(QMainWindow):
             else:
                 destination = self.state_path
             temporary = destination.with_suffix('.' + uuid.uuid4().hex[:8] + '.tmp')
-            temporary.write_text(json.dumps({'version': 2, 'projects': {key: page.values() for key, page in self.pages.items()},
+            state = {'version': 3,
+                'projects': {key: page.values() for key, page in self.pages.items() if key != 'sci-pic'},
+                'sci-pic': self.scipic_page.state_values(),
                 'project_files': {key: str((page.editor.document if page.editor else page.document).path) for key, page in self.pages.items()
-                                  if (page.editor.document if page.editor else page.document).path}}, ensure_ascii=False, indent=2), encoding='utf-8')
+                                  if key != 'sci-pic' and (page.editor.document if page.editor else page.document).path}}
+            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
             temporary.replace(destination)
         except OSError as exc:
             self.statusBar().showMessage('界面设置未保存：' + str(exc), 15000)
 
     def closeEvent(self, event):
-        running = [key for key, page in self.pages.items() if page.preparing or page.recording or (page.task and not page.task.completed)]
+        running = [key for key, page in self.pages.items() if getattr(page, 'preparing', False)
+                   or getattr(page, 'recording', False) or (getattr(page, 'task', None) and not page.task.completed)]
         if self.check_task and not self.check_task.completed:
             running.append('环境检查')
         if running:
@@ -1329,7 +2210,7 @@ class Window(QMainWindow):
             event.ignore()
             QTimer.singleShot(200, self.close)
             return
-        dirty = [page for page in self.pages.values() if page.dirty()]
+        dirty = [page for page in self.pages.values() if getattr(page, 'dirty', lambda: False)()]
         if dirty:
             answer = QMessageBox.question(self, '保存项目修改', '以下项目有未保存修改：' + '、'.join(p.project.key for p in dirty) + '\n是否保存后关闭？',
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
@@ -1412,3 +2293,4 @@ if __name__ == '__main__':
         application = QApplication.instance() or QApplication([])
         QMessageBox.critical(None, '工作台启动失败', '启动失败，请检查 out/gui/startup_error.log。\n' + error[-1800:])
         raise SystemExit(1)
+

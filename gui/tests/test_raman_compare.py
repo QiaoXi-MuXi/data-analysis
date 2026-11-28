@@ -179,5 +179,57 @@ class RamanCompareGuiTests(unittest.TestCase):
         self.assertFalse(page.fields['height'].isEnabled())
 
 
+    def test_window_distinguishes_five_raman_modes(self):
+        (self.folder / 'stack.xlsx').write_bytes(b'stack')
+        (self.folder / 'compare.xlsx').write_bytes(b'compare')
+        window = Window(self.root)
+        self.addCleanup(lambda: window.pool.waitForDone(10000))
+        page = window.pages['Raman']
+        combo = page.fields['mode']
+        self.assertEqual([combo.itemData(index) for index in range(combo.count())],
+                         ['config', 'directory', 'compare', 'montage', 'batch_display'])
+
+        def show(mode):
+            combo.setCurrentIndex(combo.findData(mode))
+
+        def visible(widget):
+            return not widget.isHidden()
+
+        show('config')
+        self.assertEqual(Path(page.fields['config'].text()).name, 'stack.xlsx')
+        self.assertTrue(visible(page.config_field))
+        self.assertFalse(visible(page.mode_config_box))
+        self.assertTrue(page.fields['height'].isEnabled())
+        self.assertFalse(page.fields['shift'].isEnabled())
+
+        show('compare')
+        self.assertEqual(Path(page.fields['config'].text()).name, 'compare.xlsx')
+        self.assertTrue(page.fields['compare_reference'].isEnabled())
+        self.assertFalse(page.fields['height'].isEnabled())
+        self.assertTrue(page.fields['shift'].isEnabled())
+
+        show('montage')
+        self.assertFalse(visible(page.config_field))
+        self.assertTrue(visible(page.mode_config_box))
+        self.assertTrue(page.fields['height'].isEnabled())
+        self.assertTrue(page.fields['shift'].isEnabled())
+        self.assertTrue(page.fields['zero_guard'].isEnabled())
+        self.assertFalse(page.fields['compare_reference'].isEnabled())
+
+        show('batch_display')
+        self.assertFalse(visible(page.config_field))
+        self.assertTrue(visible(page.mode_config_box))
+        self.assertFalse(page.fields['height'].isEnabled())
+        self.assertFalse(page.fields['shift'].isEnabled())
+        self.assertFalse(page.fields['zero_guard'].isEnabled())
+
+        show('directory')
+        self.assertFalse(visible(page.config_field))
+        self.assertFalse(visible(page.mode_config_box))
+        self.assertTrue(page.fields['height'].isEnabled())
+        self.assertFalse(page.fields['compare_reference'].isEnabled())
+        self.assertEqual(page.values()['mode'], 'directory')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -6,15 +6,19 @@ from copy import deepcopy
 import csv
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal, Slot, QTimer
-from PySide6.QtGui import QColor, QUndoCommand, QUndoStack
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal, Slot, QTimer, QEvent, QRectF
+from PySide6.QtGui import QColor, QUndoCommand, QUndoStack, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QTableView, QHeaderView, QAbstractItemView, QSplitter,
-    QScrollArea, QFrame, QFormLayout, QFileDialog, QMessageBox, QMenu,
-    QStyledItemDelegate, QCheckBox, QInputDialog, QListWidget, QListWidgetItem)
+    QScrollArea, QFrame, QFormLayout, QFileDialog, QMessageBox, QMenu, QToolButton,
+    QStyledItemDelegate, QCheckBox, QInputDialog, QListWidget, QListWidgetItem,
+    QApplication, QStyle, QStyleOptionViewItem)
 
-from documents import SCHEMAS, Document, Problem, readiness, flag, parse_value, read_exchange, resolve_source, append_sources, export_csv, export_xlsx
-from model import natural_key
+from theme import ACCENT, WARNING, DANGER
+
+from documents import (SCHEMAS, Document, Problem, readiness, flag, parse_value,
+                       read_exchange, resolve_source, append_sources, export_csv, export_xlsx)
+from model import natural_key, PROJECTS
 from ra_batch import ColorField, RaBatchDialog
 
 
@@ -111,7 +115,7 @@ class SampleModel(QAbstractTableModel):
                 except ValueError:
                     return '需修正'
             if role == Qt.ItemDataRole.ForegroundRole:
-                return QColor('#aa5d43' if problems else '#758c71')
+                return QColor('#E0352B' if problems else '#8A8A92')
             return None
         if role == Qt.ItemDataRole.ToolTipRole and problems:
             return '\n'.join(p.message for p in problems)
@@ -142,11 +146,11 @@ class SampleModel(QAbstractTableModel):
             try:
                 parse_value(self.schema[key], value)
                 if not flag(row.get('enabled'), True):
-                    return QColor('#929e96')
+                    return QColor('#A8A8AE')
                 if key == 'file' and not resolve_source(self.document, row).is_file():
-                    return QColor('#a96a38')
+                    return QColor('#C77A18')
             except (ValueError, OSError):
-                return QColor('#aa5d43')
+                return QColor('#E0352B')
         return None
 
     def flags(self, index):
@@ -199,6 +203,54 @@ class SampleModel(QAbstractTableModel):
 
 
 class TypedDelegate(QStyledItemDelegate):
+    """启用列自绘：18 DIP 圆角方块 + 白色勾，和设置中心的复选框同一种手感。"""
+
+    def paint(self, painter, option, index):
+        columns = getattr(index.model(), 'columns', ())
+        if columns and columns[index.column()] == 'enabled':
+            self.paint_check(painter, option, index)
+            return
+        super().paint(painter, option, index)
+
+    def paint_check(self, painter, option, index):
+        view_option = QStyleOptionViewItem(option)
+        self.initStyleOption(view_option, index)
+        view_option.text = ''
+        view_option.checkState = Qt.CheckState.Unchecked
+        # 关掉系统自带的勾选指示器，只留下我们画的那一个。
+        view_option.features = (view_option.features
+                                & ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator)
+        widget = view_option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, view_option, painter, widget)
+        state = index.data(Qt.ItemDataRole.CheckStateRole)
+        box = QRectF(option.rect.center().x() - 9, option.rect.center().y() - 9, 18, 18)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if state == Qt.CheckState.Checked:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(ACCENT))
+            painter.drawRoundedRect(box, 5, 5)
+            pen = QPen(QColor('#FFFFFF'), 2.3)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            path = QPainterPath()
+            path.moveTo(box.left() + 4.4, box.top() + 9.4)
+            path.lineTo(box.left() + 7.5, box.top() + 12.4)
+            path.lineTo(box.left() + 13.6, box.top() + 5.8)
+            painter.drawPath(path)
+        elif state == Qt.CheckState.PartiallyChecked:
+            painter.setPen(QPen(QColor(WARNING), 1))
+            painter.setBrush(QColor('#FFF4E5'))
+            painter.drawRoundedRect(box, 5, 5)
+            painter.setPen(QPen(QColor(WARNING), 2))
+            painter.drawLine(box.left() + 5, box.center().y(), box.right() - 5, box.center().y())
+        else:
+            painter.setPen(QPen(QColor('#C9C9CF'), 1))
+            painter.setBrush(QColor('#FFFFFF'))
+            painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
+        painter.restore()
+
     def createEditor(self, parent, option, index):
         column = index.model().schema[index.model().columns[index.column()]]
         if column.kind in ('choice', 'bool'):
@@ -275,12 +327,23 @@ class ConfigEditor(QWidget):
         title.addWidget(text('样本与配置', 'sectionTitle'))
         hint = text('选择样本，在右侧调整参数；双击表格可直接编辑', 'muted')
         hint.setWordWrap(True)
+        hint.setMinimumWidth(170)  # 窄窗口宁可整页横向滚动，也不把说明挤成一条竖排字
         title.addWidget(hint)
         top.addLayout(title, 1)
         if document.module == 'Ra':
             top.addWidget(action('一键配置', self.quick_config, 'primarySmall'))
-        top.addWidget(action('添加文件', self.add_files))
-        top.addWidget(action('导入配置', self.import_file))
+        import_button = QToolButton()
+        import_button.setText('导入样本 ▾')
+        import_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        import_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        import_menu = QMenu(import_button)
+        import_menu.addAction('选择文件…（可多选）', self.import_files)
+        import_menu.addAction('选择文件夹…（按扩展名筛选）', self.import_folder)
+        import_menu.addAction('从输入目录导入…', self.import_from_input)
+        import_menu.addSeparator()
+        import_menu.addAction('导入项目 / 配置（JSON / XLSX / CSV）…', self.import_file)
+        import_button.setMenu(import_menu)
+        top.addWidget(import_button)
         export = QPushButton('导出 / 另存为')
         menu = QMenu(export)
         menu.addAction('样本参数 CSV…', self.export_table)
@@ -301,14 +364,18 @@ class ConfigEditor(QWidget):
         center.addLayout(tools)
         self.table = QTableView()
         self.table.setObjectName('samples')
+        self.table.setMinimumHeight(150)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setAlternatingRowColors(False)
         self.table.setWordWrap(False)
-        self.table.verticalHeader().setDefaultSectionSize(49)
+        self.table.verticalHeader().setDefaultSectionSize(46)
         self.table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self.table.setItemDelegate(TypedDelegate(self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed | QAbstractItemView.EditTrigger.SelectedClicked)
+        self.table.setAcceptDrops(True)
+        self.table.viewport().setAcceptDrops(True)
+        self.table.viewport().installEventFilter(self)
         center.addWidget(self.table, 1)
         bottom = QHBoxLayout()
         self.undo_button = action('撤销', lambda: self.model.stack.undo())
@@ -324,8 +391,8 @@ class ConfigEditor(QWidget):
         inspector_scroll = QScrollArea()
         self.inspector_scroll = inspector_scroll
         inspector_scroll.setWidgetResizable(True)
-        inspector_scroll.setMinimumWidth(250)
-        inspector_scroll.setMaximumWidth(355)
+        inspector_scroll.setMinimumWidth(240)
+        inspector_scroll.setMaximumWidth(340)
         inspector = QFrame()
         inspector.setObjectName('inspector')
         self.inspector_layout = QVBoxLayout(inspector)
@@ -335,6 +402,9 @@ class ConfigEditor(QWidget):
         self.filename = text('选择一个样本', 'sectionTitle')
         self.filename.setWordWrap(True)
         self.inspector_layout.addWidget(self.filename)
+        divider = QFrame()
+        divider.setObjectName('divider')
+        self.inspector_layout.addWidget(divider)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         form.setVerticalSpacing(12)
@@ -384,7 +454,7 @@ class ConfigEditor(QWidget):
         inspector_scroll.setWidget(inspector)
         split.addWidget(inspector_scroll)
         split.setStretchFactor(0, 1)
-        split.setSizes([740, 280])
+        split.setSizes([740, 300])
         layout.addWidget(split, 1)
         self.install_model()
 
@@ -393,6 +463,8 @@ class ConfigEditor(QWidget):
         self.model = SampleModel(self.document, self)
         self.table.setModel(self.model)
         header = self.table.horizontalHeader()
+        header.setMinimumSectionSize(96)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 65)
@@ -431,7 +503,7 @@ class ConfigEditor(QWidget):
 
     def show_error(self, message):
         self.message.setText(message)
-        self.message.setStyleSheet('color:#a75a3d;')
+        self.message.setStyleSheet(f'color:{DANGER};')
 
     def updated(self):
         self.message.setStyleSheet('')
@@ -480,7 +552,7 @@ class ConfigEditor(QWidget):
                 self.problems_list.addItem(item)
             count = len(self.problems)
             self.readiness_label.setText(f'发现 {count} 项问题；' + ('显示前100项，修正后重新检查' if count > 100 else '点击条目定位样本') if count else '输入检查通过；运行前将再次复核')
-            self.readiness_label.setStyleSheet('color:#a66b3e;' if count else 'color:#527947;')
+            self.readiness_label.setStyleSheet(f'color:{WARNING};' if count else 'color:#8A8A92;')
             self.problems_button.setText(f'查看问题 ({count})' if count else '暂无问题')
             self.problems_button.setEnabled(bool(count))
             self.problems_list.setVisible(bool(count))
@@ -572,22 +644,148 @@ class ConfigEditor(QWidget):
         value = widget.currentData() if isinstance(widget, QComboBox) else widget.text()
         self.model.set_value(self.selected_row, key, value)
 
-    def add_files(self):
-        pattern = '表面数据 (*.dat *.bmp *.png *.jpg *.jpeg)' if self.document.module == 'Ra' else '光谱 (*.txt)'
-        paths, _ = QFileDialog.getOpenFileNames(self, '添加样本（保留已有参数）', str(self.document.base), pattern)
+    def extensions(self):
+        project = next((p for p in PROJECTS if p.key == self.document.module), None)
+        return tuple(ext.casefold() for ext in (project.extensions if project else ()))
+
+    def start_dir(self):
+        """优先从当前输入目录打开对话框，避免每次都从模块根目录重新找。"""
+        raw = (self.document.options or {}).get('input')
+        if raw:
+            path = Path(raw)
+            if not path.is_absolute():
+                path = self.document.base / path
+            if path.is_dir():
+                return str(path)
+        return str(self.document.base)
+
+    def import_files(self):
+        patterns = '支持的数据 (' + ' '.join('*' + ext for ext in self.extensions()) + ')'
+        paths, _ = QFileDialog.getOpenFileNames(self, '导入样本（可多选）', self.start_dir(), patterns)
         if paths:
-            self.add_paths(paths)
+            self.import_paths(paths)
+
+    def import_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, '导入文件夹（按扩展名筛选）', self.start_dir())
+        if folder:
+            self.import_paths(self.scan_folder(Path(folder)))
+
+    def import_from_input(self):
+        raw = (self.document.options or {}).get('input')
+        if not raw:
+            self.show_error('先在“01 数据与配置”填写输入目录，再从这里导入。')
+            return
+        source = Path(raw)
+        if not source.is_absolute():
+            source = self.document.base / source
+        if not source.is_dir():
+            self.show_error(f'输入目录不存在：{source}')
+            return
+        self.import_paths(self.scan_folder(source))
+
+    def scan_folder(self, folder):
+        """ER 票据可能按月/批次嵌套，递归；其余模块按单层目录筛选，避免意外把旧结果也带进来。"""
+        wanted = set(self.extensions())
+        paths = []
+        iterator = folder.rglob('*') if self.document.module == 'ER' else folder.iterdir()
+        for path in iterator:
+            try:
+                if (path.is_file() and path.suffix.casefold() in wanted
+                        and not path.name.startswith('~$')):
+                    paths.append(path)
+            except OSError:
+                continue
+        key = (lambda p: natural_key(str(p.relative_to(folder)))
+               if self.document.module == 'ER' else natural_key(p.name))
+        return sorted(paths, key=key)
+
+    def import_paths(self, paths, replace=None):
+        """导入样本：默认替换旧行（不再残存之前的文件），也可显式追加；返回新增行数。"""
+        wanted = set(self.extensions())
+        candidates = []
+        rejected = []
+        for raw in paths:
+            path = Path(raw)
+            if path.is_file() and path.suffix.casefold() in wanted and not path.name.startswith('~$'):
+                candidates.append(path)
+            else:
+                rejected.append(path.name)
+        if not candidates:
+            self.show_error('没有可导入的受支持文件：' + ('、'.join(rejected[:5]) if rejected else '未选择任何文件'))
+            return 0
+        if self.document.module == 'Raman':
+            candidates.sort(key=lambda p: natural_key(p.name))
+        if replace is None:
+            replace = True
+            if self.document.rows:
+                replace = self.ask_import_mode(len(candidates))
+                if replace is None:
+                    return 0
+        if replace:
+            staging = Document(self.document.module, self.document.base)
+            rows = append_sources(staging, candidates)
+            if not rows:
+                self.show_error('这些文件已全部存在于当前样本表，未做替换。')
+                return 0
+            self.model.stack.push(EditRows(self.model, rows, f'导入 {len(rows)} 份样本（替换）'))
+            self.selected_row = 0
+        else:
+            rows = append_sources(self.document, candidates)
+            if not rows:
+                self.message.setText(f'没有新增文件；原有 {len(self.document.rows)} 行保持不变。')
+                return 0
+            self.model.stack.push(EditRows(self.model, self.document.rows + rows, f'追加 {len(rows)} 份样本'))
+            self.selected_row = len(self.document.rows) - 1
+        summary = ('已替换为 ' if replace else '已追加 ') + f'{len(rows)} 份样本'
+        if rejected:
+            summary += f'；跳过 {len(rejected)} 个不支持的文件'
+            self.message.setToolTip('跳过的文件：' + '、'.join(rejected[:20]))
+        else:
+            self.message.setToolTip('')
+        summary += '（可撤销）' if replace else '；原有参数保留（可撤销）'
+        self.message.setText(summary)
+        return len(rows)
+
+    def ask_import_mode(self, count):
+        box = QMessageBox(self)
+        box.setWindowTitle('导入样本')
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f'准备导入 {count} 份文件。当前已有 {len(self.document.rows)} 行样本。')
+        box.setInformativeText('“替换”会清空现有样本行（可用 Ctrl+Z 撤销）；“追加”保留原有参数并自动去重。')
+        replace = box.addButton('替换现有', QMessageBox.ButtonRole.DestructiveRole)
+        append = box.addButton('追加到现有', QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(replace)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is replace:
+            return True
+        if clicked is append:
+            return False
+        return None
+
+    def eventFilter(self, obj, event):
+        if obj is self.table.viewport():
+            if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if event.mimeData().hasUrls():
+                    event.acceptProposedAction()
+                    return True
+            if event.type() == QEvent.Type.Drop:
+                paths = []
+                for url in event.mimeData().urls():
+                    local = Path(url.toLocalFile())
+                    if local.is_dir():
+                        paths.extend(self.scan_folder(local))
+                    elif local.is_file():
+                        paths.append(local)
+                if paths:
+                    self.import_paths(paths)
+                event.acceptProposedAction()
+                return True
+        return super().eventFilter(obj, event)
 
     def add_paths(self, paths):
-        if self.document.module == 'Raman':
-            paths = sorted(paths, key=lambda p: natural_key(Path(p).name))
-        added = append_sources(self.document, paths)
-        if added:
-            self.selected_row = len(self.document.rows)
-            self.model.stack.push(EditRows(self.model, self.document.rows + added, '追加样本'))
-        else:
-            self.message.setText('没有新文件；已有样本及其参数保持不变。')
-        return len(added)
+        return self.import_paths(paths, replace=False)
 
     def remove_rows(self):
         indexes = {i.row() for i in self.table.selectionModel().selectedRows()}
@@ -688,3 +886,5 @@ class ConfigEditor(QWidget):
                 self.message.setText('已导出 Excel 配置（含停用行及标注列）；修改保存后可重新导入 GUI，或通过 --config 交给命令行运行。')
             except (OSError, ValueError) as exc:
                 self.show_error('导出失败：' + str(exc))
+
+

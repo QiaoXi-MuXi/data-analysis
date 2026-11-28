@@ -44,6 +44,142 @@ PROJECTS = (
 )
 
 
+SCI_PIC_PROJECT = Project('sci-pic', 'SCI-Pic 学术绘图', 'SCI-PIC  /  STYLE-AWARE FIGURES',
+                          'plot_sci_pic.py', ('.xlsx', '.xlsm'),
+                          '使用模板工作副本与可选样式配置；未配置样式时完全保持旧版外观。')
+
+
+@dataclass(frozen=True)
+class SourceRef:
+    """One read-only source artifact referenced by a SCI-Pic request."""
+    path: str
+    sha256: str = ""
+    mtime: str = ""
+    size: int = 0
+
+    def to_dict(self) -> dict:
+        return {"path": self.path, "sha256": self.sha256, "mtime": self.mtime, "size": self.size}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SourceRef":
+        return cls(path=str(data.get("path", "")), sha256=str(data.get("sha256", "")),
+                   mtime=str(data.get("mtime", "")), size=int(data.get("size", 0) or 0))
+
+
+@dataclass(frozen=True)
+class PlotRequest:
+    """Serializable SCI-Pic plot request shared by GUI service layer and CLI.
+
+    Paths are stored as given; relative entries resolve against the workspace
+    root. The object carries no Qt widgets or runtime state.
+    """
+    source_project: str
+    source_run_id: str
+    source_refs: tuple[SourceRef, ...]
+    template_id: str
+    work_copy: str
+    output_dir: str
+    style_config: str = ""
+    style_overrides: dict | None = None
+    style_strict: bool = False
+    resolved_config: str = ""
+    mapping: dict | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "source_project": self.source_project,
+            "source_run_id": self.source_run_id,
+            "source_refs": [ref.to_dict() for ref in self.source_refs],
+            "template_id": self.template_id,
+            "work_copy": self.work_copy,
+            "output_dir": self.output_dir,
+            "style_config": self.style_config,
+            "style_overrides": dict(self.style_overrides or {}),
+            "style_strict": self.style_strict,
+            "resolved_config": self.resolved_config,
+            "mapping": dict(self.mapping or {}),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PlotRequest":
+        return cls(
+            source_project=str(data.get("source_project", "")),
+            source_run_id=str(data.get("source_run_id", "")),
+            source_refs=tuple(SourceRef.from_dict(item) for item in data.get("source_refs", [])),
+            template_id=str(data.get("template_id", "")),
+            work_copy=str(data.get("work_copy", "")),
+            output_dir=str(data.get("output_dir", "")),
+            style_config=str(data.get("style_config", "")),
+            style_overrides=dict(data.get("style_overrides") or {}),
+            style_strict=bool(data.get("style_strict", False)),
+            resolved_config=str(data.get("resolved_config", "")),
+            mapping=dict(data.get("mapping") or {}),
+        )
+
+
+@dataclass(frozen=True)
+class PlotResult:
+    """Serializable outcome of a SCI-Pic run collected by the service layer."""
+    status: str
+    outputs: tuple[str, ...]
+    log_path: str = ""
+    resolved_config: str = ""
+    manifest: str = ""
+    message: str = ""
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "outputs": list(self.outputs),
+            "log_path": self.log_path,
+            "resolved_config": self.resolved_config,
+            "manifest": self.manifest,
+            "message": self.message,
+            "errors": list(self.errors),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PlotResult":
+        return cls(status=str(data.get("status", "")),
+                   outputs=tuple(str(item) for item in data.get("outputs", [])),
+                   log_path=str(data.get("log_path", "")),
+                   resolved_config=str(data.get("resolved_config", "")),
+                   manifest=str(data.get("manifest", "")),
+                   message=str(data.get("message", "")),
+                   errors=tuple(str(item) for item in data.get("errors", [])))
+
+
+@dataclass(frozen=True)
+class SciPicRequest:
+    key: str
+    template_id: str
+    source: str
+    output: str
+    style_config: str = ''
+    style_overrides: dict | None = None
+    style_strict: bool = False
+    write_resolved: str = ''
+
+
+def sci_pic_command(root: Path, request: SciPicRequest, *, results=(),
+                    resolved=None) -> Command:
+    """Convert one serializable request into the existing GUI Command adapter."""
+    if request.key != SCI_PIC_PROJECT.key:
+        raise ValueError('请求不是 SCI-Pic 绘图请求。')
+    arguments = ['--excel', str(as_path(request.source, root)),
+                 '--out', str(as_path(request.output, root))]
+    if request.style_config.strip():
+        arguments.extend(['--style-config', str(as_path(request.style_config, root))])
+    if request.style_strict:
+        arguments.append('--style-strict')
+    if request.write_resolved.strip():
+        arguments.extend(['--write-resolved', str(as_path(request.write_resolved, root))])
+    return Command(root / 'sci-pic' / 'plot_sci_pic.py', tuple(arguments),
+                   root / 'sci-pic', tuple(Path(p) for p in results),
+                   '每次运行独立目录；模板和原始数据只读。')
+
+
 @dataclass(frozen=True)
 class Command:
     script: Path
@@ -65,6 +201,7 @@ def default_options(root: Path, project: Project) -> dict:
         'xmin': '', 'xmax': '', 'height': '5', 'shift': '0',
         'compare_reference': '', 'reference_height': '',
         'compare_tolerance': '10', 'compare_normalize': True, 'zero_guard': '50',
+        'mode_config': '',
         'input_format': 'auto', 'lsm_mode': 'require-calibration', 'scale': '', 'offset': '0',
         'dy': '', 'strip': '12.6', 'count': '9', 'seed': '20261029', 'attempts': '4',
         'xlsx': str(folder / 'out' / 'results' / 'groove_paper_results.xlsx'),
@@ -106,10 +243,10 @@ def build_command(root: Path, project: Project, options: dict) -> Command:
         if not source.is_dir():
             raise ValueError(f'输入目录不存在：{source}')
 
-    def config_file():
-        path = as_path(options['config'], root)
+    def config_file(key='config'):
+        path = as_path(options[key], root)
         if not path.is_file() or path.suffix.casefold() != '.xlsx':
-            raise ValueError('请选择存在的 XLSX 配置表，并保存关闭 Excel。')
+            raise ValueError(f'请选择存在的 XLSX 配置表（{path.name if path.name else "未选择"}），并保存关闭 Excel。')
         return path
 
     def add_numeric(flag, key, name, **kwargs):
@@ -133,25 +270,39 @@ def build_command(root: Path, project: Project, options: dict) -> Command:
         require_source()
         args += ['--src', str(source), '--out', str(output)]
         mode = options.get('mode', 'config')
+        # 堆叠与基准对比必须有配置表；拼图和批次展示留空则由分析程序自动发现。
+        optional_config = ''
         if mode == 'config':
             args += ['--stack', str(config_file())]
         elif mode == 'compare':
             args += ['--compare', str(config_file())]
+        elif mode in ('montage', 'batch_display'):
+            flag = '--montage' if mode == 'montage' else '--batch-display'
+            args.append(flag)
+            optional_config = str(options.get('mode_config', '') or '').strip()
+            if optional_config:
+                args.append(str(config_file('mode_config')))
         xmin = add_numeric('--xmin', 'xmin', '区间下限')
         xmax = add_numeric('--xmax', 'xmax', '区间上限')
         if (xmin is None) != (xmax is None):
             raise ValueError('波数区间上下限请同时填写，或同时留空。')
-        if mode not in ('config', 'compare') and xmin is None:
-            raise ValueError('单谱模式请填写波数区间上下限。堆叠/基准对比可留空并沿用配置。')
+        if mode == 'directory' and xmin is None:
+            # 单谱模式留空区间: 由分析程序取输入数据的公共波数范围。
+            args.append('--auto-window')
         if xmin is not None and xmin >= xmax:
             raise ValueError('区间下限必须小于上限。')
-        if mode != 'compare':
+        if mode in ('config', 'directory', 'montage'):
             add_numeric('--height', 'height', '峰高阈值')
+        if mode in ('directory', 'compare', 'montage'):
             add_numeric('--shift', 'shift', '峰位校正')
+        if mode in ('config', 'directory', 'montage'):
+            # 激光线排除只在单谱/堆叠/拼图三种绘图路径生效；基准对比与批次展示走各自的峰检测流程。
+            add_numeric('--zero-guard', 'zero_guard', '激光线排除半宽')
         results = (output,)
-        impact = (f'对比表、图像和运行清单写入 {output}；匹配只表示峰位差在容差内，不是物相鉴定。'
-                  if mode == 'compare' else
-                  f'图像及峰位表写入 {output}；同名文件会被替换，其他旧文件保留。')
+        impact = {'compare': f'对比表、图像和运行清单写入 {output}；匹配只表示峰位差在容差内，不是物相鉴定。',
+                  'montage': f'每个样品的拼图与峰位表写入 {output}；同名文件会被替换。',
+                  'batch_display': f'分层页面（含 index.html）与测量表写入 {output}；同名文件会被替换，其他旧文件保留。',
+                  }.get(mode, f'图像及峰位表写入 {output}；同名文件会被替换，其他旧文件保留。')
     elif project.key == 'CLSM':
         require_source()
         xlsx = as_path(options['xlsx'], root)

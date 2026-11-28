@@ -7,6 +7,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import date, datetime
 import hashlib
+import importlib.util
 import io
 import json
 import math
@@ -81,7 +82,8 @@ ALIASES = {
               'offset': ['纵向偏移', '偏移', 'offset'], 'xmin': ['区间下限', '起点', 'xmin', '区间下限/cm⁻¹'],
               'xmax': ['区间上限', '终点', 'xmax', '区间上限/cm⁻¹']},
 }
-PATH_OPTIONS = {'input', 'output', 'config', 'template', 'xlsx', 'compare_reference'}
+PATH_OPTIONS = {'input', 'output', 'config', 'template', 'xlsx', 'compare_reference',
+                'mode_config'}
 
 
 def normalize(value):
@@ -248,7 +250,7 @@ def validate_options(module, options):
     for key in PATH_OPTIONS:
         if key in options and not isinstance(options[key], str):
             raise ValueError(f'{key} 路径需要文字')
-    modes = ('config', 'directory', 'compare') if module == 'Raman' else (
+    modes = ('config', 'directory', 'compare', 'montage', 'batch_display') if module == 'Raman' else (
         'config', 'directory') if module == 'Ra' else ('default',)
     choices = {'mode': modes,
                'types': ('all', 'bmp', 'dat'), 'input_format': ('auto', 'txt', 'lsm'),
@@ -289,6 +291,86 @@ def validate_options(module, options):
             height = options.get('reference_height', '')
             if str(height).strip() and float(height) < 0:
                 raise ValueError('基准峰高阈值不能小于 0')
+
+
+_STYLE_MODULES = {}
+
+
+def sci_pic_style_module(root):
+    """Load P2's standalone style integration without touching plotting internals."""
+    path = Path(root).resolve() / 'sci-pic' / 'style_integration.py'
+    key = str(path)
+    if key not in _STYLE_MODULES:
+        spec = importlib.util.spec_from_file_location('_workbench_style_integration', path)
+        if spec is None or spec.loader is None:
+            raise ValueError('无法加载样式解析模块。')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _STYLE_MODULES[key] = module
+    return _STYLE_MODULES[key]
+
+
+def sci_pic_style_rows():
+    module = sci_pic_style_module(Path(__file__).resolve().parents[1])
+    return list(module.STYLE_FIELDS)
+
+
+def sci_pic_style_values(path):
+    module = sci_pic_style_module(Path(__file__).resolve().parents[1])
+    settings, locations = module.load_style_config(path)
+    return settings, locations
+
+
+def resolve_sci_pic_style(root, workbook=None, overrides=None, *, strict=False,
+                          locations=None, output=None, excel_settings=None):
+    module = sci_pic_style_module(root)
+    if excel_settings is None and workbook is not None:
+        excel_settings, discovered = module.load_style_config(workbook)
+        if locations is None:
+            locations = discovered
+    style, sources, units = module.resolve_project_style(
+        'sci-pic', excel_settings=excel_settings, config_path=None,
+        explicit_overrides=overrides or {}, strict=strict, location=locations or {})
+    payload = module.resolved_config_payload(style, sources, units=units, project='sci-pic')
+    if output is not None:
+        module.write_resolved_config(output, style, sources, units=units, project='sci-pic')
+    return payload
+
+
+def write_sci_pic_style_rows(path, values, *, module_root=None):
+    """Write canonical style rows into a work copy's 全局设置 sheet only."""
+    from openpyxl import load_workbook
+    path = Path(path)
+    fields = sci_pic_style_rows() if module_root is None else sci_pic_style_module(module_root).STYLE_FIELDS
+    wb = load_workbook(path)
+    try:
+        ws = wb['全局设置'] if '全局设置' in wb.sheetnames else wb.create_sheet('全局设置')
+        if ws.max_row == 1 and all(cell.value in (None, '') for cell in ws[1]):
+            for column, title in enumerate(('参数', '填写值', '说明'), 1):
+                ws.cell(row=1, column=column, value=title)
+        elif ws.cell(row=1, column=1).value in (None, ''):
+            ws.insert_rows(1)
+            for column, title in enumerate(('参数', '填写值', '说明'), 1):
+                ws.cell(row=1, column=column, value=title)
+        existing = {}
+        for row in range(2, ws.max_row + 1):
+            key = ws.cell(row=row, column=1).value
+            if key is not None and str(key).strip():
+                existing[str(key).strip()] = row
+        supplied = {str(key).strip(): value for key, value in (values or {}).items()}
+        for field in fields:
+            row = existing.get(field)
+            if row is None:
+                row = ws.max_row + 1
+                existing[field] = row
+            ws.cell(row=row, column=1, value=field)
+            ws.cell(row=row, column=2, value='' if supplied.get(field) is None else supplied[field])
+            if ws.cell(row=row, column=3).value in (None, ''):
+                ws.cell(row=row, column=3, value='留空继承；SCI-Pic 字号/线宽单位为 pt，dpi 为分辨率')
+        wb.save(path)
+    finally:
+        wb.close()
+    return path
 
 
 def atomic_write(path, data, expected=None, *, backup=True):
